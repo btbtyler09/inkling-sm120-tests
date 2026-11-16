@@ -16,10 +16,13 @@ docker run --rm --gpus '"device=0,1"' --ipc host --shm-size 32g \
   --user "$(id -u):0" -e HOME=/work \
   -v "$PWD/fips_enabled:/proc/sys/crypto/fips_enabled:ro" \
   -v /path/to/Inkling-2-Small:/model:ro \
-  -e IMAGE_REF=IMAGE_DIGEST \
+  -e IMAGE_REF=sha256:6565f808f94f4a5ff24e2efeee7c9022c60cbd1b84ebb48288d2f7948bb3f1ab \
   -v "$PWD:/work" \
-  IMAGE_DIGEST
+  btbtyler09/vllm-cuda@sha256:6565f808f94f4a5ff24e2efeee7c9022c60cbd1b84ebb48288d2f7948bb3f1ab
 ```
+
+Image: `btbtyler09/vllm-cuda:inkling2-tests-20261116`, built from this repo's `tests/` with inkling2 model code
+`inkling2-ink10-rc 4e6fc4b71b`.
 
 - **Weights:** `-v /path/to/Inkling-2-Small:/model:ro` is the full checkpoint already on disk: the original
   `thinkingmachines` one or the NVFP4 requant. The test models are cut from it; nothing is downloaded. Every tensor is
