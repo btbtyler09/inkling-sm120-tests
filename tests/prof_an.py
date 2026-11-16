@@ -57,6 +57,17 @@ def summarize(d, steps, top):
           f"({100 * busy / span:.0f}%), kernel sum {tot / steps:.1f} us/step, launches {len(ev) / steps:.1f}/step")
     for n, (us, k) in sorted(agg.items(), key=lambda x: -x[1][0])[:top]:
         print(f"  {us / steps:9.1f} us/step  {k / steps:6.2f}x  {100 * us / tot:5.1f}%  {n}")
+    # one process can drive several GPUs (remote drafter: TP rank 0 + the drafter GPU): split by device
+    by_dev = defaultdict(list)
+    for e in ev:
+        by_dev[(e.get("args") or {}).get("device", e.get("pid"))].append(e)
+    if len(by_dev) > 1:
+        for dv, de in sorted(by_dev.items(), key=lambda x: str(x[0])):
+            da, _, db = table(de)
+            dt = sum(v[0] for v in da.values())
+            print(f"DEVICE {dv}: GPU busy {db / steps:.1f} us/step, kernel sum {dt / steps:.1f} us/step, launches {len(de) / steps:.1f}/step")
+            for n, (us, k) in sorted(da.items(), key=lambda x: -x[1][0])[:8]:
+                print(f"    {us / steps:9.1f} us/step  {k / steps:6.2f}x  {n}")
     return agg
 
 
