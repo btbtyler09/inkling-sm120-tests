@@ -22,9 +22,14 @@ recs.sort(key=lambda r: r["t"])
 K = recs[0]["k"] if recs else 0
 last = {}            # req id -> (step, drafts, top3) of its previous logged step
 steps = []           # per record: list of (a, b, drafts, top3) for requests with a decode verify of the previous drafts
-LIGHT = any(r.get("top3") is None for r in recs)   # production light trace: no top-3 (B and the C proxy need it)
+LIGHT = any("ids" not in r or r.get("top3") is None for r in recs)   # light trace: no tokens (B and the C proxy need them)
 for r in recs:
     row = []
+    if "ids" not in r:   # production light trace: aggregate numbers only (a per request, no tokens)
+        row = [(K - j, None, None, None) for q, j in zip(r["qlen"], r["rej"]) if q == K + 1]
+        if row:
+            steps.append(row)
+        continue
     st = r.get("step")
     for i, rid in enumerate(r["ids"]):
         prev = last.get(rid)
@@ -88,4 +93,5 @@ for L in ((1, 2, 3) if not LIGHT else ()):
         report(f"B lengths={L} bonus-guesses={G} (C={L * G})", hit_B(L, G))
 for m in (1, 2, 3, 4):
     report(f"C anchor m={m} upper bound", hit_C(m, False))
-    report(f"C anchor m={m} proxy", hit_C(m, True))
+    if not LIGHT:
+        report(f"C anchor m={m} proxy", hit_C(m, True))
