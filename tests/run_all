@@ -1,0 +1,117 @@
+#!/bin/bash
+# run_all -- Inkling-2 2-GPU test set (inside the test image; see README.md). Everything lands under $WORK (default /work, a
+# mounted host dir). After every arm, $WORK/results.tgz is rewritten, so a partial run still returns data; summary.md on top.
+#   PHASES (default: all, in this order)  MAX_MBPS: cap the slice download (MB/s)  IMAGE_REF: the image digest you ran
+# Arms write: boot log, client logs, /metrics before/after, a profiler window (c=1 and c=4, 32 steps each) + kernel table,
+# env + command line; arms.tsv lists every arm PASS/FAIL/SKIPPED with the reason. gpu.csv: per-GPU util/clocks/power/temp/
+# memory every second for the whole run. On a 7-layer slice the draft is never accepted: drafter arms measure its COST.
+set -u
+T=/opt/inkling-tests; W=${WORK:-/work}; cd "$W" || { echo "WORK=$W missing: mount a host dir there"; exit 2; }
+ALL="env slice race b12x remote fp8 kdyn w4a4"
+PHASES=${PHASES:-$ALL}; P=$W/pub; mkdir -p $P/arms
+exec > >(tee -a $P/console.log) 2>&1
+echo "== inkling 2-GPU test set $(date -u +%FT%TZ) phases: $PHASES"
+has(){ case " $PHASES " in *" $1 "*) return 0 ;; esac; return 1; }
+pack(){ tar -czf $W/results.tgz.part -C $W pub 2>/dev/null && mv $W/results.tgz.part $W/results.tgz; }
+row(){ printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$(date -u +%T)" "$3" >> $P/arms.tsv; echo "ARM $1 $2 $3"; pack; }
+# per-GPU telemetry for the whole run (explicit PID; stopped at the end)
+nvidia-smi --query-gpu=timestamp,index,utilization.gpu,utilization.memory,clocks.sm,clocks.mem,power.draw,temperature.gpu,memory.used \
+  --format=csv -l 1 > $P/gpu.csv 2>&1 & GPULOG=$!
+trap 'kill $GPULOG 2>/dev/null; pack' EXIT
+{ echo "image: ${IMAGE_REF:-unknown (pass -e IMAGE_REF=<digest>)}"; cat $T/VERSION
+  python3 -c "import vllm, torch, flashinfer; print('vllm', vllm.__version__, '| torch', torch.__version__, '| cuda', torch.version.cuda, '| flashinfer', flashinfer.__version__)"
+  nvidia-smi; nvidia-smi topo -m; nvidia-smi -q -d CLOCK,POWER | grep -E "Product|Max|Limit" | head -40
+  echo "fips_enabled seen by the container: $(cat /proc/sys/crypto/fips_enabled 2>/dev/null)"; } > $P/env.txt 2>&1
+NG=$(nvidia-smi -L | wc -l)
+row env PASS "$NG GPU(s)"
+S=$W/slices; CK=$S/ckpt; CK7=$S/ckpt7
+LOCAL=(); [ -f /model/model.safetensors.index.json ] && LOCAL=(--local /model)
+if has slice; then
+  t=$(date +%s); python3 $T/slice_build.py $S "${LOCAL[@]}" --max-mbps "${MAX_MBPS:-0}" > $P/slice.log 2>&1
+  if grep -q SLICE_OK $P/slice.log; then row slice PASS "$(( $(date +%s)-t )) s; $(grep SLICE_OK $P/slice.log | cut -c1-200)"
+  else row slice FAIL "$(tail -1 $P/slice.log | cut -c1-200)"; fi
+fi
+[ -f $CK7/config.json ] || { echo "no slices at $S: every model arm is SKIPPED"; }
+F91="INKLING2_REUSE_REL_LOGITS=1 INKLING2_LOCAL_SPLIT_KV=1 INKLING2_GLOBAL_SPLIT_TUNED=1"
+export OFFLOAD_GIB=16 MAXSEQ=32 ALLREDUCE_IPC=0 NGPU=1 RUNNER=process PORT=8000 NAME=inkling
+. /usr/local/share/vllm-cuda/tools/runpod/run_lib.sh
+[ -n "${INKLING_TESTS_STUB:-}" ] && . "$INKLING_TESTS_STUB"   # rehearsal only: stub servers instead of vllm serve
+BASEENV="HF_HUB_OFFLINE=1 VLLM_CUDA_CACHE_ROOT=$W/kc VLLM_USE_SIMPLE_KV_OFFLOAD=1 VLLM_INKLING2_ENFORCE_TOOL_CHOICE=1 INKLING2_SPLIT_KV_STATIC=1 $F91"
+DS7='{"method":"dspark","num_speculative_tokens":7}'
+DS4='{"method":"dspark","num_speculative_tokens":4}'
+DSDYN='{"method":"dspark","num_speculative_tokens":7,"num_speculative_tokens_per_batch_size":[[1,1,7],[2,4,5],[5,32,3]]}'
+api(){ env BASE=http://127.0.0.1:$PORT MODEL=$NAME "$@"; }
+# arm TAG DEVS DIR KV_GIB "ENV" "TESTS" -- serve args.  TESTS: words from prof tps ctx32 ctx128 lp
+arm(){ local tag=$1 devs=$2 dir=$3 kv=$4 env=$5 tests=$6; shift 7
+  local A=$P/arms/$tag; mkdir -p $A; local t0=$(date +%s)
+  [ -f $dir/config.json ] || { row $tag SKIPPED "no slice"; return 0; }
+  export MODEL_DIR=$dir KV_GIB=$kv; . $T/sat_flags.sh
+  local pc="{\"profiler\":\"torch\",\"torch_profiler_dir\":\"$A/trace\",\"torch_profiler_with_stack\":false}"
+  printf 'CUDA_VISIBLE_DEVICES=%s %s %s\nvllm serve %s --served-model-name %s --port %s %s --max-num-batched-tokens 2048 %s --profiler-config %s\n' \
+    "$devs" "$BASEENV" "$env" "$dir" "$NAME" "$PORT" "${FLAGS[*]}" "$*" "$pc" > $A/cmd.txt
+  srv_start s_$tag $dir - "CUDA_VISIBLE_DEVICES=$devs $BASEENV $env" -- --served-model-name $NAME --port $PORT "${FLAGS[@]}" \
+    --max-num-batched-tokens 2048 "$@" --profiler-config "$pc"
+  local ok=1; until http_ok; do srv_alive s_$tag || { ok=0; break; }; [ $(( $(date +%s)-t0 )) -gt 2400 ] && { ok=0; break; }; sleep 5; done
+  if [ $ok = 0 ]; then srv_logs s_$tag > $A/server.log; srv_stop s_$tag
+    row $tag FAIL "boot: $(grep -E "Error|error" $A/server.log | grep -vE "^\s+" | tail -1 | cut -c1-220)"; return 0; fi
+  echo "BOOT_OK $tag $(( $(date +%s)-t0 )) s"
+  nvidia-smi --query-gpu=index,memory.used --format=csv,noheader > $A/mem_after_boot.txt
+  curl -s http://127.0.0.1:$PORT/metrics > $A/metrics_before.txt
+  for x in $tests; do case $x in
+    prof) for c in 1 4; do mkdir -p $A/trace; timeout 900 python3 $T/prof_drive.py http://127.0.0.1:$PORT $NAME $c 32 > $A/prof_c$c.log 2>&1
+            sleep 3; mv $A/trace $A/trace_c$c 2>/dev/null; python3 $T/prof_an.py summarize $A/trace_c$c 32 40 > $A/kernels_c$c.txt 2>&1; done ;;
+    tps)  for c in 1 4 8; do api REASONING=0 timeout 900 python3 $T/post_live.py tps $c > $A/tps_c$c.log 2>&1
+            grep -oE "aggregate=[0-9.]+" $A/tps_c$c.log | tail -1 | sed "s/^/RES $tag c=$c /"; done ;;
+    ctx32|ctx128) n=32768; [ $x = ctx128 ] && n=131072
+          DOC_OFFSET=$((n / 8 + 300)) timeout 2400 python3 $T/ld_ctx.py $n 1 reuse > $A/$x.log 2>&1
+          tail -1 $A/$x.log | cut -c1-260 | sed "s/^/RES $tag $x /" ;;
+    lp)   api timeout 1800 python3 $T/lp_cmp.py collect $A/lp.json > $A/lp.log 2>&1 ;;
+  esac; done
+  curl -s http://127.0.0.1:$PORT/metrics > $A/metrics_after.txt
+  srv_logs s_$tag > $A/server.log; srv_stop s_$tag
+  grep -E "SpecDecoding metrics" $A/server.log | tail -1 | cut -c1-300 | sed "s/^/RES $tag spec /"
+  row $tag PASS "$(( $(date +%s)-t0 )) s"; }
+if has race; then
+  t=$(date +%s); CUDA_VISIBLE_DEVICES=0 timeout 3600 python3 $T/moe_race.py ${INKLING_TESTS_STUB:+--dry-run} --out $P/moe_race.json > $P/moe_race.log 2>&1; rc=$?
+  grep -E "^RESULT|ERROR|NUMERICS" $P/moe_race.log | cut -c1-220 | sed 's/^/RACE /'
+  [ $rc = 0 ] && row race PASS "$(( $(date +%s)-t )) s" || row race FAIL "rc=$rc: $(tail -1 $P/moe_race.log | cut -c1-200)"
+fi
+B12X_OK=0; grep -q INKLING2_MOE_B12X /opt/rt/lib/python3.12/site-packages/vllm/models/inkling2/moe_marlin.py && B12X_OK=1
+if has b12x; then
+  for tag in MT BT MD BD; do
+    case $tag in M*) be="" ;; B*) be="INKLING2_MOE_B12X=1" ;; esac
+    if [ $tag != MT ] && [ $tag != MD ] && [ $B12X_OK = 0 ]; then row $tag SKIPPED "no b12x MoE backend in this image"; continue; fi
+    case $tag in ?T) arm $tag 0 $CK7 14 "$be" "prof tps ctx32" -- ;;
+                 ?D) arm $tag 0 $CK7 14 "INKLING2_DSPARK_SPLIT_KV=1 $be" "prof tps" -- --speculative-config "$DS7" ;; esac
+  done
+fi
+if has remote; then
+  # KV 14 GiB: the drafter's KV covers every block of the target's pool (on this slice 5x the pool, ~70 GiB on GPU 1)
+  if [ "$NG" -ge 2 ]; then arm R1 0,1 $CK7 14 "INKLING2_DSPARK_SPLIT_KV=1 INKLING2_DRAFT_DEVICE=cuda:1" "prof tps ctx32" -- --speculative-config "$DS7"
+  else row R1 SKIPPED "needs 2 GPUs"; fi
+  arm T7 0,1 $CK7 14 "" "prof tps ctx32" --
+  arm D1 0 $CK7 14 "INKLING2_DSPARK_SPLIT_KV=1" "prof tps ctx32" -- --speculative-config "$DS7"
+  arm D1E 0 $CK7 14 "INKLING2_DSPARK_SPLIT_KV=1 INKLING2_DRAFT_EAGER=1" "prof tps" -- --speculative-config "$DS7"
+fi
+if has kdyn; then
+  arm D1K4 0 $CK7 14 "INKLING2_DSPARK_SPLIT_KV=1" "prof tps" -- --speculative-config "$DS4"
+  arm D1DYN 0 $CK7 14 "INKLING2_DSPARK_SPLIT_KV=1" "prof tps" -- --speculative-config "$DSDYN"
+fi
+if has fp8; then
+  arm D1F8 0 $CK7 14 "INKLING2_DSPARK_SPLIT_KV=1 INKLING2_DRAFT_FP8=1" "prof tps" -- --speculative-config "$DS7"
+  if [ "$NG" -ge 2 ]; then arm R1F8 0,1 $CK7 14 "INKLING2_DSPARK_SPLIT_KV=1 INKLING2_DRAFT_DEVICE=cuda:1 INKLING2_DRAFT_FP8=1" "prof tps" -- --speculative-config "$DS7"
+  else row R1F8 SKIPPED "needs 2 GPUs"; fi
+fi
+if has w4a4; then
+  # W4: FlashInfer CUTLASS W4A4 at EVERY batch size (MIN_TOKENS=0, decode included; dynamic per-batch scale + 4over6)
+  arm W0 0 $CK 8 "" "prof tps ctx32 ctx128 lp" --
+  arm W4 0 $CK 8 "INKLING2_W4A4_PREFILL=1 INKLING2_W4A4_MIN_TOKENS=0" "prof tps ctx32 ctx128 lp" --
+  # W4P: the shipping form (W4A4 only for batches >= 512 tokens: prefill)
+  arm W4P 0 $CK 8 "INKLING2_W4A4_PREFILL=1" "tps ctx32 ctx128 lp" --
+  for t in W4 W4P; do [ -f $P/arms/W0/lp.json ] && [ -f $P/arms/$t/lp.json ] && python3 $T/lp_cmp.py compare $P/arms/W0/lp.json $P/arms/$t/lp.json > $P/arms/$t/lp_vs_W0.txt 2>&1 \
+    && tail -6 $P/arms/$t/lp_vs_W0.txt | sed "s/^/LP $t-vs-W0 /"; done
+fi
+python3 $T/mk_summary.py $P > $P/summary.md 2>&1; cp $P/summary.md $W/summary.md 2>/dev/null
+echo "DONE $(date -u +%T)"
+kill $GPULOG 2>/dev/null; pack
+echo "RESULTS $W/results.tgz ($(du -h $W/results.tgz | cut -f1)): send this file back (privately)"

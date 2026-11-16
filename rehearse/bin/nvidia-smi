@@ -1,0 +1,7 @@
+#!/bin/bash
+# rehearsal stand-in for nvidia-smi: two fake GPUs
+case "$*" in
+  *-L*) echo "GPU 0: FAKE (UUID: GPU-0)"; echo "GPU 1: FAKE (UUID: GPU-1)" ;;
+  *memory.used*) echo "0, 1000 MiB"; echo "1, 1000 MiB" ;;
+  *) echo "0, FAKE, 0.0, 97887 MiB, 600.00 W"; echo "1, FAKE, 0.0, 97887 MiB, 600.00 W" ;;
+esac
