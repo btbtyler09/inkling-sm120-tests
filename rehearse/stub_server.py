@@ -18,6 +18,10 @@ class H(BaseHTTPRequestHandler):
         self.end_headers(); self.wfile.write(b)
 
     def do_GET(self):
+        if self.path == "/metrics":
+            b = b'# TYPE vllm:spec_decode_num_drafts counter\nvllm:spec_decode_num_drafts_total{model_name="inkling"} 1.0\n'
+            self.send_response(200); self.send_header("Content-Type", "text/plain"); self.send_header("Content-Length", str(len(b)))
+            self.end_headers(); self.wfile.write(b); return
         self._json({"object": "list", "data": [{"id": "inkling"}]})
 
     def do_POST(self):

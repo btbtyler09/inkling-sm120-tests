@@ -27,6 +27,9 @@ docker run --rm --gpus '"device=0,1"' --ipc host --shm-size 32g \
   btbtyler09/vllm-cuda@sha256:f7c4a4fc540618c66757a532cd49b14aa93f93cbbeac2bc9376ba07d64c98f9f
 ```
 
+Note: `tests/` here is ahead of that image: /metrics fetched via Python (the image has no curl, so its
+`metrics_*.txt` are empty) and a startup check for every external command. The next image picks them up.
+
 Image: `btbtyler09/vllm-cuda:inkling2-tests-20261116`, built from this repo's `tests/` with inkling2 model code
 `inkling2-ink10-rc 4e6fc4b71b`.
 

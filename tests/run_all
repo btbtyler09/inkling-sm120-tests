@@ -14,6 +14,17 @@ echo "== inkling 2-GPU test set $(date -u +%FT%TZ) phases: $PHASES"
 has(){ case " $PHASES " in *" $1 "*) return 0 ;; esac; return 1; }
 pack(){ tar -czf $W/results.tgz.part -C $W pub 2>/dev/null && mv $W/results.tgz.part $W/results.tgz; }
 row(){ printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$(date -u +%T)" "$3" >> $P/arms.tsv; echo "ARM $1 $2 $3"; pack; }
+# preflight: every external command this runner and run_lib.sh (process mode) call. nvidia-smi comes from the NVIDIA
+# runtime (--gpus). Builtins (kill, printf, read, ...) need nothing. A missing one fails the run here, not as empty files.
+MISSING=""
+for c in python3 tar gzip mv cp mkdir cat cut tr wc head tail sed awk grep tee du df stat date sleep timeout seq env \
+         readlink rm nvidia-smi; do command -v $c >/dev/null 2>&1 || MISSING="$MISSING $c"; done
+python3 -c "import urllib.request, json, safetensors, torch" 2>/dev/null || MISSING="$MISSING python:urllib/json/safetensors/torch"
+if [ -n "$MISSING" ]; then
+  echo "PREFLIGHT FAILED: missing in this container:$MISSING (nvidia-smi missing = run without --gpus?)"
+  row commands FAIL "missing:$MISSING"; exit 4
+fi
+row commands PASS "all external commands present"
 # per-GPU telemetry for the whole run (explicit PID; stopped at the end)
 nvidia-smi --query-gpu=timestamp,index,utilization.gpu,utilization.memory,clocks.sm,clocks.mem,power.draw,temperature.gpu,memory.used \
   --format=csv -l 1 > $P/gpu.csv 2>&1 & GPULOG=$!
@@ -56,6 +67,8 @@ BASEENV="HF_HUB_OFFLINE=1 VLLM_CUDA_CACHE_ROOT=$W/kc VLLM_USE_SIMPLE_KV_OFFLOAD=
 DS7='{"method":"dspark","num_speculative_tokens":7}'
 DS4='{"method":"dspark","num_speculative_tokens":4}'
 DSDYN='{"method":"dspark","num_speculative_tokens":7,"num_speculative_tokens_per_batch_size":[[1,1,7],[2,4,5],[5,32,3]]}'
+metrics(){ python3 -c "import sys, urllib.request; sys.stdout.write(urllib.request.urlopen('http://127.0.0.1:$PORT/metrics', timeout=30).read().decode())" \
+  || echo "METRICS_FETCH_FAILED"; }
 api(){ env BASE=http://127.0.0.1:$PORT MODEL=$NAME "$@"; }
 # arm TAG DEVS DIR KV_GIB "ENV" "TESTS" -- serve args.  TESTS: words from prof tps ctx32 ctx128 lp
 arm(){ local tag=$1 devs=$2 dir=$3 kv=$4 env=$5 tests=$6; shift 7
@@ -72,7 +85,7 @@ arm(){ local tag=$1 devs=$2 dir=$3 kv=$4 env=$5 tests=$6; shift 7
     row $tag FAIL "boot: $(grep -E "Error|error" $A/server.log | grep -vE "^\s+" | tail -1 | cut -c1-220)"; return 0; fi
   echo "BOOT_OK $tag $(( $(date +%s)-t0 )) s"
   nvidia-smi --query-gpu=index,memory.used --format=csv,noheader > $A/mem_after_boot.txt
-  curl -s http://127.0.0.1:$PORT/metrics > $A/metrics_before.txt
+  metrics > $A/metrics_before.txt
   for x in $tests; do case $x in
     prof) for c in 1 4; do mkdir -p $A/trace; timeout 900 python3 $T/prof_drive.py http://127.0.0.1:$PORT $NAME $c 32 > $A/prof_c$c.log 2>&1
             sleep 3; mv $A/trace $A/trace_c$c 2>/dev/null; python3 $T/prof_an.py summarize $A/trace_c$c 32 40 > $A/kernels_c$c.txt 2>&1; done ;;
@@ -83,10 +96,11 @@ arm(){ local tag=$1 devs=$2 dir=$3 kv=$4 env=$5 tests=$6; shift 7
           tail -1 $A/$x.log | cut -c1-260 | sed "s/^/RES $tag $x /" ;;
     lp)   api timeout 1800 python3 $T/lp_cmp.py collect $A/lp.json > $A/lp.log 2>&1 ;;
   esac; done
-  curl -s http://127.0.0.1:$PORT/metrics > $A/metrics_after.txt
+  metrics > $A/metrics_after.txt
   srv_logs s_$tag > $A/server.log; srv_stop s_$tag
   grep -E "SpecDecoding metrics" $A/server.log | tail -1 | cut -c1-300 | sed "s/^/RES $tag spec /"
-  row $tag PASS "$(( $(date +%s)-t0 )) s"; }
+  local warn=""; for f in metrics_before metrics_after; do grep -q "^vllm:" $A/$f.txt 2>/dev/null || warn="$warn $f.txt has no vllm: metrics;"; done
+  row $tag PASS "$(( $(date +%s)-t0 )) s${warn:+; WARN$warn}"; }
 if has race; then
   t=$(date +%s); CUDA_VISIBLE_DEVICES=0 timeout 3600 python3 $T/moe_race.py ${INKLING_TESTS_STUB:+--dry-run} --out $P/moe_race.json > $P/moe_race.log 2>&1; rc=$?
   grep -E "^RESULT|ERROR|NUMERICS" $P/moe_race.log | cut -c1-220 | sed 's/^/RACE /'
