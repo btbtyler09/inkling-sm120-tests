@@ -7,20 +7,24 @@ measure what the drafter **costs** per step, not its acceptance.
 
 ## Run
 
-Needs Docker with the NVIDIA runtime and 2 GPUs. The work dir (mounted at `/work`) must be on a disk with **80 GB free**:
-the test models are written there. The run checks this first and stops with a clear message if there is less.
+Needs Docker with the NVIDIA runtime and 2 GPUs. Disk: the test models go to `/work/slices` (~60 GB), and logs, traces
+and the compile cache go to `/work` (~20 GB). On one disk that is 80 GB. The run checks free space first and stops with
+a message naming the mount that is short.
+
+- **Small home disk:** keep `/work` in your home dir and add `-v /big/disk/inkling-slices:/work/slices` to the command
+  below. That dir needs 60 GB free, and home needs 20 GB.
 
 ```bash
-WORKDIR=/path/on/a/disk/with/80GB/free/inkling-tests     # not your home dir if / is small
+WORKDIR=~/inkling-tests          # needs 20 GB free (80 GB if you don't add the /work/slices mount)
 mkdir -p "$WORKDIR" && cd "$WORKDIR"
 echo 0 > fips_enabled          # FIPS hosts: the image's OpenSSL dies at import unless this file is mounted (harmless elsewhere)
 docker run --rm --gpus '"device=0,1"' --ipc host --shm-size 32g \
   --user "$(id -u):0" -e HOME=/work \
   -v "$PWD/fips_enabled:/proc/sys/crypto/fips_enabled:ro" \
   -v /path/to/Inkling-2-Small:/model:ro \
-  -e IMAGE_REF=sha256:ce773b309b4c67687022340f890867b361b32ae9c40f3a079af9851932503daa \
+  -e IMAGE_REF=sha256:f7c4a4fc540618c66757a532cd49b14aa93f93cbbeac2bc9376ba07d64c98f9f \
   -v "$PWD:/work" \
-  btbtyler09/vllm-cuda@sha256:ce773b309b4c67687022340f890867b361b32ae9c40f3a079af9851932503daa
+  btbtyler09/vllm-cuda@sha256:f7c4a4fc540618c66757a532cd49b14aa93f93cbbeac2bc9376ba07d64c98f9f
 ```
 
 Image: `btbtyler09/vllm-cuda:inkling2-tests-20261116`, built from this repo's `tests/` with inkling2 model code

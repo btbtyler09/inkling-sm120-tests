@@ -25,15 +25,22 @@ trap 'kill $GPULOG 2>/dev/null; pack' EXIT
 NG=$(nvidia-smi -L | wc -l)
 row env PASS "$NG GPU(s)"
 S=$W/slices; CK=$S/ckpt; CK7=$S/ckpt7
-# preflight: the slices (~57 GB) + compile cache + results need ~80 GB free in /work unless the slices already exist
-FREE_GB=$(df -P -BG "$W" | awk 'NR==2 {gsub("G","",$4); print $4}')
-NEED_GB=80; [ -f $CK7/config.json ] && [ -f $CK/config.json ] && NEED_GB=15
-if [ "${FREE_GB:-0}" -lt $NEED_GB ] && [ -z "${INKLING_TESTS_STUB:-}" ]; then
-  echo "PREFLIGHT FAILED: /work (your mounted dir) has ${FREE_GB} GB free; this run needs ${NEED_GB} GB."
-  echo "Re-run with -v <a dir on a disk with ${NEED_GB}+ GB free>:/work"
-  row preflight FAIL "/work has ${FREE_GB} GB free, needs ${NEED_GB} GB"; exit 3
+# preflight: /work/slices needs ~60 GB (the test models; 0 if already built), /work ~20 GB (compile cache, results,
+# traces). /work/slices may be its own mount; on one filesystem the two needs add up.
+mkdir -p "$S"
+free_gb(){ df -P -BG "$1" | awk 'NR==2 {gsub("G","",$4); print $4}'; }
+NS=60; [ -f $CK7/config.json ] && [ -f $CK/config.json ] && NS=0
+NW=20; FS=$(free_gb "$S"); FW=$(free_gb "$W"); PF=""
+if [ "$(stat -c %d "$S")" = "$(stat -c %d "$W")" ]; then
+  [ "$FW" -lt $((NS + NW)) ] && PF="/work (one disk for everything) has ${FW} GB free, needs $((NS + NW)) GB. Mount a dir on a disk with $((NS + NW))+ GB free at /work, or put the test models on a big disk with -v <big dir>:/work/slices"
+else
+  [ "$FS" -lt $NS ] && PF="/work/slices has ${FS} GB free, needs ${NS} GB: mount -v <dir on a disk with ${NS}+ GB free>:/work/slices"
+  [ "$FW" -lt $NW ] && PF="${PF:+$PF; }/work has ${FW} GB free, needs ${NW} GB: mount -v <dir on a disk with ${NW}+ GB free>:/work"
 fi
-row preflight PASS "/work ${FREE_GB} GB free (needs ${NEED_GB})"
+if [ -n "$PF" ] && [ -z "${INKLING_TESTS_STUB:-}" ]; then
+  echo "PREFLIGHT FAILED: $PF"; row preflight FAIL "$PF"; exit 3
+fi
+row preflight PASS "/work ${FW} GB free (needs ${NW}), /work/slices ${FS} GB free (needs ${NS})$([ "$(stat -c %d "$S")" = "$(stat -c %d "$W")" ] && echo ', same disk: sum')"
 LOCAL=(); [ -f /model/model.safetensors.index.json ] && LOCAL=(--local /model)
 if has slice; then
   t=$(date +%s); python3 $T/slice_build.py $S "${LOCAL[@]}" --max-mbps "${MAX_MBPS:-0}" > $P/slice.log 2>&1
