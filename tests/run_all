@@ -131,13 +131,17 @@ if has fp8; then
   arm D1F8 0 $CK7 14 "INKLING2_DSPARK_SPLIT_KV=1 INKLING2_DRAFT_FP8=1" "prof tps" -- --speculative-config "$DS7"
   if [ "$NG" -ge 2 ]; then arm R1F8 0,1 $CK7 14 "INKLING2_DSPARK_SPLIT_KV=1 INKLING2_DRAFT_DEVICE=cuda:1 INKLING2_DRAFT_FP8=1" "prof tps" -- --speculative-config "$DS7"
   else row R1F8 SKIPPED "needs 2 GPUs"; fi
+  # NVFP4 draft (RTN four-over-six): all incl. head (D1N4), body only with FP8 head (D1N4H)
+  arm D1N4 0 $CK7 14 "INKLING2_DSPARK_SPLIT_KV=1 INKLING2_DRAFT_NVFP4=1" "prof tps" -- --speculative-config "$DS7"
+  arm D1N4H 0 $CK7 14 "INKLING2_DSPARK_SPLIT_KV=1 INKLING2_DRAFT_NVFP4=body" "prof tps" -- --speculative-config "$DS7"
 fi
 if has w4a4; then
   # W4: FlashInfer CUTLASS W4A4 at EVERY batch size (MIN_TOKENS=0, decode included; dynamic per-batch scale + 4over6)
   arm W0 0 $CK 8 "" "prof tps ctx32 ctx128 lp" --
   arm W4 0 $CK 8 "INKLING2_W4A4_PREFILL=1 INKLING2_W4A4_MIN_TOKENS=0" "prof tps ctx32 ctx128 lp" --
-  # W4P: the shipping form (W4A4 only for batches >= 512 tokens: prefill)
-  arm W4P 0 $CK 8 "INKLING2_W4A4_PREFILL=1" "tps ctx32 ctx128 lp" --
+  # W4P: W4A4 only for batches >= 512 tokens (prefill). Test form: keeps BOTH expert copies, so KV 4 GiB to fit the
+  # slice (the shipping form will be one b12x weight set, A16 decode / A4 prefill)
+  arm W4P 0 $CK 4 "INKLING2_W4A4_PREFILL=1" "tps ctx32 ctx128 lp" --
   for t in W4 W4P; do [ -f $P/arms/W0/lp.json ] && [ -f $P/arms/$t/lp.json ] && python3 $T/lp_cmp.py compare $P/arms/W0/lp.json $P/arms/$t/lp.json > $P/arms/$t/lp_vs_W0.txt 2>&1 \
     && tail -6 $P/arms/$t/lp_vs_W0.txt | sed "s/^/LP $t-vs-W0 /"; done
 fi

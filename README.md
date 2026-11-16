@@ -22,16 +22,14 @@ docker run --rm --gpus '"device=0,1"' --ipc host --shm-size 32g \
   --user "$(id -u):0" -e HOME=/work \
   -v "$PWD/fips_enabled:/proc/sys/crypto/fips_enabled:ro" \
   -v /path/to/Inkling-2-Small:/model:ro \
-  -e IMAGE_REF=sha256:f7c4a4fc540618c66757a532cd49b14aa93f93cbbeac2bc9376ba07d64c98f9f \
+  -e IMAGE_REF=sha256:863480c5b22381434814487b4249e06d8d8a5393867282e24209ba563ad20529 \
   -v "$PWD:/work" \
-  btbtyler09/vllm-cuda@sha256:f7c4a4fc540618c66757a532cd49b14aa93f93cbbeac2bc9376ba07d64c98f9f
+  btbtyler09/vllm-cuda@sha256:863480c5b22381434814487b4249e06d8d8a5393867282e24209ba563ad20529
 ```
 
-Note: `tests/` here is ahead of that image: /metrics fetched via Python (the image has no curl, so its
-`metrics_*.txt` are empty) and a startup check for every external command. The next image picks them up.
-
-Image: `btbtyler09/vllm-cuda:inkling2-tests-20261116`, built from this repo's `tests/` with inkling2 model code
-`inkling2-ink10-rc 4e6fc4b71b`.
+Image: `btbtyler09/vllm-cuda:inkling2-tests-20261116b`, built from this repo's `tests/` with inkling2 model code
+`inkling2-ink10-rc 43a6097f40`. It adds the NVFP4 drafter arms (D1N4, D1N4H) and the W4P load fix, fetches /metrics
+via Python, and checks every external command at startup.
 
 - **Weights:** `-v /path/to/Inkling-2-Small:/model:ro` is the full checkpoint already on disk: the original
   `thinkingmachines` one or the NVFP4 requant. The test models are cut from it; nothing is downloaded. Every tensor is
