@@ -98,8 +98,11 @@ def run_group(gpus, sizes):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--groups", default="0,1,2,3;0,1,2,3,4,5")
-    ap.add_argument("--sizes", default="1,2,4,8,16,32,64")
+    # default: in-switch TP4, cross-socket TP6 and TP8 (prod: 2 groups of 4 GPUs, each behind one PCIe switch with a
+    # x32 uplink to its socket); sizes: decode M=1-64 (latency) plus prefill chunks M=512/2048 (bandwidth; the uplink is
+    # shared by the 4 GPUs behind a switch)
+    ap.add_argument("--groups", default="0,1,2,3;0,1,2,3,4,5;0,1,2,3,4,5,6,7")
+    ap.add_argument("--sizes", default="1,2,4,8,16,32,64,512,2048")
     ap.add_argument("--out", default="ar_bench.json")
     a = ap.parse_args()
     sizes = [int(v) for v in a.sizes.split(",")]
@@ -133,8 +136,9 @@ def main():
         for m in sizes:
             n50, n99 = out["res"][f"nccl_M{m}"]
             v50, v99 = out["res"][f"vllm_M{m}"]
-            print(f"  M={m:3d}  nccl p50 {n50:7.1f} us p99 {n99:7.1f} | vllm path p50 {v50:7.1f} us p99 {v99:7.1f} "
-                  f"| x96 per decode step: {96 * v50 / 1000:.2f} ms")
+            tail = (f"| x96 per decode step: {96 * v50 / 1000:.2f} ms" if m <= 64 else
+                    f"| {m * HIDDEN * 2 / v50 / 1e3:.1f} GB/s algbw, x96 per prefill chunk: {96 * v50 / 1000:.1f} ms")
+            print(f"  M={m:4d}  nccl p50 {n50:8.1f} us p99 {n99:8.1f} | vllm path p50 {v50:8.1f} us p99 {v99:8.1f} {tail}")
     json.dump(report, open(a.out, "w"), indent=1)
     print(f"AR_BENCH_DONE wrote {a.out}")
 

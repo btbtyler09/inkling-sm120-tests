@@ -22,9 +22,9 @@ docker run --rm --gpus '"device=0,1"' --ipc host --shm-size 32g \
   --user "$(id -u):0" -e HOME=/work \
   -v "$PWD/fips_enabled:/proc/sys/crypto/fips_enabled:ro" \
   -v /path/to/Inkling-2-Small:/model:ro \
-  -e IMAGE_REF=sha256:9877d9273418048fcdb73607debfc94c9ac6995d4444e1dd0cb03f838c541c44 \
+  -e IMAGE_REF=sha256:53dc93acd43e9f1b86fb7ae92339267ee50a56a94376ac474fd452caf6f470c4 \
   -v "$PWD:/work" \
-  btbtyler09/vllm-cuda@sha256:9877d9273418048fcdb73607debfc94c9ac6995d4444e1dd0cb03f838c541c44
+  btbtyler09/vllm-cuda@sha256:53dc93acd43e9f1b86fb7ae92339267ee50a56a94376ac474fd452caf6f470c4
 ```
 
 Image: `btbtyler09/vllm-cuda:inkling2-tests-20261116c`, built from this repo's `tests/` with inkling2 model code
@@ -60,16 +60,17 @@ phase, /metrics via Python, and a startup check for every external command.
 
 ## All-reduce latency on a multi-GPU box (standalone, no model, ~2-5 min)
 
-Measures decode-size all-reduces (bf16 [M, 4608], M = 1-64 tokens) for GPU groups, e.g. 4 GPUs behind one socket vs 6
-spanning both. It reports which backend vLLM enables per group (custom all-reduce, FlashInfer PCIe IPC, or NCCL), each
+Measures all-reduces of bf16 [M, 4608] for GPU groups: decode sizes M = 1-64 (latency) and prefill chunks M = 512 /
+2048 (bandwidth). The default groups are 0-3 (TP4, one PCIe switch / socket), 0-5 (TP6) and 0-7 (TP8), the last two
+crossing sockets. It reports which backend vLLM enables per group (custom all-reduce, FlashInfer PCIe IPC, or NCCL), each
 GPU's NUMA node, and p50/p99 µs per call. Decode does ~96 all-reduces per step (2 per layer x 48).
 
 ```bash
 docker run --rm --gpus all --ipc host --user "$(id -u):0" -e HOME=/tmp \
   -v "$PWD/fips_enabled:/proc/sys/crypto/fips_enabled:ro" -v "$PWD:/work" -w /work \
   --entrypoint /opt/rt/bin/python \
-  btbtyler09/vllm-cuda@sha256:9877d9273418048fcdb73607debfc94c9ac6995d4444e1dd0cb03f838c541c44 \
-  /opt/inkling-tests/ar_bench.py --groups "0,1,2,3;0,1,2,3,4,5"
+  btbtyler09/vllm-cuda@sha256:53dc93acd43e9f1b86fb7ae92339267ee50a56a94376ac474fd452caf6f470c4 \
+  /opt/inkling-tests/ar_bench.py
 ```
 
 Pick the groups from the GPU/NUMA list it prints first (indices as `nvidia-smi` shows them). Add
