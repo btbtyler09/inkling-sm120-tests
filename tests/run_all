@@ -76,10 +76,12 @@ arm(){ local tag=$1 devs=$2 dir=$3 kv=$4 env=$5 tests=$6; shift 7
   [ -f $dir/config.json ] || { row $tag SKIPPED "no slice"; return 0; }
   export MODEL_DIR=$dir KV_GIB=$kv; . $T/sat_flags.sh
   local pc="{\"profiler\":\"torch\",\"torch_profiler_dir\":\"$A/trace\",\"torch_profiler_with_stack\":false}"
-  printf 'CUDA_VISIBLE_DEVICES=%s %s %s\nvllm serve %s --served-model-name %s --port %s %s --max-num-batched-tokens 2048 %s --profiler-config %s\n' \
-    "$devs" "$BASEENV" "$env" "$dir" "$NAME" "$PORT" "${FLAGS[*]}" "$*" "$pc" > $A/cmd.txt
+  # ARM_MNBT: the test arms' --max-num-batched-tokens (2048); empty = keep sat_flags' value (the production 4096)
+  local mnbt=(); [ -n "${ARM_MNBT-2048}" ] && mnbt=(--max-num-batched-tokens "${ARM_MNBT-2048}")
+  printf 'CUDA_VISIBLE_DEVICES=%s %s %s\nvllm serve %s --served-model-name %s --port %s %s %s %s --profiler-config %s\n' \
+    "$devs" "$BASEENV" "$env" "$dir" "$NAME" "$PORT" "${FLAGS[*]}" "${mnbt[*]}" "$*" "$pc" > $A/cmd.txt
   srv_start s_$tag $dir - "CUDA_VISIBLE_DEVICES=$devs $BASEENV $env" -- --served-model-name $NAME --port $PORT "${FLAGS[@]}" \
-    --max-num-batched-tokens 2048 "$@" --profiler-config "$pc"
+    ${mnbt[@]+"${mnbt[@]}"} "$@" --profiler-config "$pc"
   local ok=1; until http_ok; do srv_alive s_$tag || { ok=0; break; }; [ $(( $(date +%s)-t0 )) -gt 2400 ] && { ok=0; break; }; sleep 5; done
   if [ $ok = 0 ]; then srv_logs s_$tag > $A/server.log; srv_stop s_$tag
     row $tag FAIL "boot: $(grep -E "Error|error" $A/server.log | grep -vE "^\s+" | tail -1 | cut -c1-220)"; return 0; fi
@@ -122,24 +124,46 @@ if has newnode; then
     timeout 900 python3 $T/ar_bench.py --groups "${AR_GROUPS:-0,1,2,3;0,1,2,3,4,5;0,1,2,3,4,5,6,7}" --out $P/ar_bench.json > $P/ar_bench.log 2>&1
     grep -E "^GROUP" $P/ar_bench.log | cut -c1-200 | sed 's/^/NEWNODE /'
   fi
-  NNDS="--speculative-config $DS7"
+  # Production serve settings: the kit's prod_env.sh defaults, overridden by the site's own site.env when it is mounted at
+  # /site.env (read-only; only these variables are parsed, nothing is sourced or printed beyond their values).
+  sitev(){ [ -r /site.env ] || return 0; python3 -c "
+import shlex, sys
+v = None
+for ln in open('/site.env'):
+    t = shlex.split(ln, comments=True)
+    if t and t[0] == 'export': t = t[1:]
+    if t and t[0].startswith(sys.argv[1] + '='): v = t[0].split('=', 1)[1] + (' ' + ' '.join(t[1:]) if len(t) > 1 else '')
+print(v if v is not None else '')" "$1"; }
+  pv(){ local s; s=$(sitev "$1"); echo "${s:-$2}"; }
+  NN_KV=$(pv KV_GIB 32); NN_OFF=$(pv OFFLOAD_GIB 256); NN_SEQ=$(pv MAXSEQ 32); NN_X=$(pv EXTRA_SERVE_ARGS ""); NN_K=$(pv DSPARK_K 7)
+  NN_RR=$(pv REUSE_REL_LOGITS 0); NN_LS=$(pv LOCAL_SPLIT_KV 0); NN_GS=$(pv GLOBAL_SPLIT_TUNED 0)
+  NN_TC=$(pv ENFORCE_TOOL_CHOICE 1); NN_SS=$(pv SPLIT_KV_STATIC 1)
+  { echo "source: prod_env.sh defaults$([ -r /site.env ] && echo ' + mounted site.env' || echo ' (no site.env mounted)')"
+    echo "KV_GIB per card=$NN_KV OFFLOAD_GIB=$NN_OFF MAXSEQ=$NN_SEQ max-num-batched-tokens=4096 (sat_flags) EXTRA_SERVE_ARGS='$NN_X' (appended last: its flags win)"
+    echo "DSPARK_K=$NN_K REUSE_REL_LOGITS=$NN_RR LOCAL_SPLIT_KV=$NN_LS GLOBAL_SPLIT_TUNED=$NN_GS ENFORCE_TOOL_CHOICE=$NN_TC SPLIT_KV_STATIC=$NN_SS"
+  } > $P/newnode_settings.txt; sed 's/^/NEWNODE settings: /' $P/newnode_settings.txt
+  NN_DS="{\"method\":\"dspark\",\"num_speculative_tokens\":$NN_K}"
+  SAVE_BASEENV=$BASEENV
+  BASEENV="HF_HUB_OFFLINE=1 VLLM_CUDA_CACHE_ROOT=$W/kc VLLM_USE_SIMPLE_KV_OFFLOAD=1 VLLM_INKLING2_ENFORCE_TOOL_CHOICE=$NN_TC INKLING2_SPLIT_KV_STATIC=$NN_SS INKLING2_REUSE_REL_LOGITS=$NN_RR INKLING2_LOCAL_SPLIT_KV=$NN_LS INKLING2_GLOBAL_SPLIT_TUNED=$NN_GS VLLM_ALLREDUCE_USE_FLASHINFER_PCIE_IPC=0"
   if [ "${NEWNODE_REHEARSE:-0}" = 1 ]; then
     NNDIR=$CK7; L_B0="0 1"; L_B="0 1"; L_C="0,1 1"; L_T4=""
   else
     NNDIR=/model; L_B0="0,1,2,3,4,5 6"; L_B="0,1,2,3,4,5 6"; L_C="0,1,2,3,4,5,7 6"; L_T4="0,1,2,3 4"
   fi
   [ -f $NNDIR/config.json ] || row newnode FAIL "no model at $NNDIR (mount the full weights at /model)"
-  for spec in "NB0|$L_B0|" "NB|$L_B|INKLING2_DSPARK_SPLIT_KV=1" "NC|$L_C|INKLING2_DSPARK_SPLIT_KV=1 INKLING2_DRAFT_DEVICE=cuda:LAST" \
-              "NT4|$L_T4|INKLING2_DSPARK_SPLIT_KV=1"; do
+  for spec in "NB0|$L_B0|" "NB|$L_B|" "NC|$L_C|INKLING2_DRAFT_DEVICE=cuda:LAST" "NT4|$L_T4|"; do
     IFS='|' read -r tag lay env <<< "$spec"
     [ -n "$lay" ] || { row $tag SKIPPED "not in rehearsal"; continue; }
     read -r devs ngpu <<< "$lay"
     nvis=$(awk -F, '{print NF}' <<< "$devs")
     [ "$nvis" -le "$NG" ] || { row $tag SKIPPED "needs $nvis GPUs, $NG visible"; continue; }
     env=${env//cuda:LAST/cuda:$((nvis - 1))}
-    sp=(); [ $tag != NB0 ] && sp=(--speculative-config "$DS7")
-    NGPU=$ngpu EXTRA_SERVE_ARGS="--kv-cache-dtype fp8" arm $tag $devs $NNDIR 0 "$env" "" -- "${sp[@]}"
+    sp=(); [ $tag != NB0 ] && sp=(--speculative-config "$NN_DS")
+    NGPU=$ngpu MAXSEQ=$NN_SEQ OFFLOAD_GIB=$NN_OFF EXTRA_SERVE_ARGS="$NN_X" ARM_MNBT="" \
+      arm $tag $devs $NNDIR $NN_KV "$env" "" -- "${sp[@]}"
+    nvidia-smi --query-gpu=index,memory.total --format=csv,noheader > $P/arms/$tag/mem_total.txt 2>/dev/null
   done
+  BASEENV=$SAVE_BASEENV
   python3 $T/newnode_summary.py $P > $P/newnode_summary.md 2>&1; cat $P/newnode_summary.md
   row newnode PASS "$(( $(date +%s)-t )) s (see pub/newnode_summary.md)"
 fi

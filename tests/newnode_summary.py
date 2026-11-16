@@ -5,6 +5,9 @@ import json, os, re, sys
 
 P = sys.argv[1]
 out = ["## newnode summary", ""]
+st = os.path.join(P, "newnode_settings.txt")
+if os.path.exists(st):
+    out += ["Serve settings used for the boots (production):", "", "```"] + open(st).read().splitlines() + ["```", ""]
 arj = os.path.join(P, "ar_bench.json")
 if os.path.exists(arj):
     r = json.load(open(arj))
@@ -27,8 +30,9 @@ if os.path.exists(arj):
     out.append("")
 names = {"NB0": "TP6, no draft", "NB": "TP6 + co-located DSpark (B)", "NC": "TP6 + drafter on its own GPU (C)",
          "NT4": "TP4 one socket + co-located DSpark"}
-out += ["### Layout boots (FP8 KV, max-model-len 262,144, MAXSEQ 32, KV from --gpu-memory-utilization)", "",
-        "| layout | status | KV tokens | max concurrency @262k | model GiB/GPU | GPU memory after boot (MiB) |", "|---|---|---|---|---|---|"]
+out += ["### Layout boots (production serve settings above, max-model-len 262,144)", "",
+        "| layout | status | KV tokens | max concurrency @262k | model GiB/GPU | GPU memory used / total after boot (MiB) |",
+        "|---|---|---|---|---|---|"]
 status = {}
 tsv = os.path.join(P, "arms.tsv")
 if os.path.exists(tsv):
@@ -40,7 +44,19 @@ for tag, name in names.items():
     log = open(os.path.join(d, "server.log"), errors="replace").read() if os.path.exists(os.path.join(d, "server.log")) else ""
     kv = re.findall(r"GPU KV cache size: ([\d,]+) tokens, Maximum concurrency for [\d,]+ tokens per request: ([\d.]+)x", log)
     ml = re.findall(r"Model loading took ([\d.]+) GiB", log)
-    mem = open(os.path.join(d, "mem_after_boot.txt")).read().replace("\n", "; ") if os.path.exists(os.path.join(d, "mem_after_boot.txt")) else ""
+    used = {}
+    if os.path.exists(os.path.join(d, "mem_after_boot.txt")):
+        for ln in open(os.path.join(d, "mem_after_boot.txt")):
+            if "," in ln:
+                i, m = ln.split(",", 1)
+                used[i.strip()] = m.strip().replace(" MiB", "")
+    tot = {}
+    if os.path.exists(os.path.join(d, "mem_total.txt")):
+        for ln in open(os.path.join(d, "mem_total.txt")):
+            if "," in ln:
+                i, m = ln.split(",", 1)
+                tot[i.strip()] = m.strip().replace(" MiB", "")
+    mem = "; ".join(f"{i}: {u}/{tot.get(i, '?')}" for i, u in used.items() if u not in ("0", ""))
     out.append(f"| {name} | {status.get(tag, 'not run')} | {kv[-1][0] if kv else ''} | {kv[-1][1] + 'x' if kv else ''} | "
                f"{ml[-1] if ml else ''} | {mem.strip('; ')} |")
 print("\n".join(out))

@@ -88,14 +88,18 @@ the full model with no requests, to read how much KV fits at 262,144 context and
 | NC | TP6 on GPUs 0-5 + the drafter on GPU 7 (layout C) |
 | NT4 | TP4 on GPUs 0-3 (one socket) + co-located DSpark |
 
-All with FP8 KV, max-model-len 262,144, max-num-seqs 32, KV sized by `--gpu-memory-utilization 0.92`. The table
-lands in `pub/newnode_summary.md`: all-reduce µs and GB/s per group, KV tokens / max concurrency at 262k, memory per GPU.
+All boots use the production serve settings: the kit's `prod_env.sh` defaults (KV 32 GiB per card, offload 256 GiB,
+max-num-seqs 32, max-num-batched-tokens 4096, 16-bit KV, DSpark K=7, ink9 opt-ins off). If you mount your `site.env`
+(`-v /path/to/site.env:/site.env:ro`), its KV_GIB, OFFLOAD_GIB, MAXSEQ, EXTRA_SERVE_ARGS, DSPARK_K and opt-in values
+override them, exactly as `create-inkling.sh` would apply them. Only those variables are read. The values used are
+printed at the top of `pub/newnode_summary.md`, followed by: all-reduce µs and GB/s per group, then per layout the KV
+tokens, max concurrency at 262k, and used/total memory per GPU.
 
 ```bash
 docker run --rm --gpus all --ipc host --shm-size 32g --user "$(id -u):0" -e HOME=/work \
   -v "$PWD/fips_enabled:/proc/sys/crypto/fips_enabled:ro" -v /path/to/Inkling-2-Small:/model:ro \
-  -e PHASES="env newnode" -e IMAGE_REF=sha256:fa3d24e264283c923672017d847938b7f12ff201641dd36a7c1ad6599886e30f \
-  -v "$PWD:/work" btbtyler09/vllm-cuda@sha256:fa3d24e264283c923672017d847938b7f12ff201641dd36a7c1ad6599886e30f
+  -e PHASES="env newnode" -e IMAGE_REF=sha256:c162f35aac1e6f8cc81ea26e27d7e1811073db29361e2e6016b62d3f04f55c47 \
+  -v "$PWD:/work" btbtyler09/vllm-cuda@sha256:c162f35aac1e6f8cc81ea26e27d7e1811073db29361e2e6016b62d3f04f55c47
 ```
 
 `NEWNODE_REHEARSE=1` runs the same phase on the 7-layer slice at TP1 on a 2-GPU box (no NT4).
