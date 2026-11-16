@@ -7,18 +7,20 @@ measure what the drafter **costs** per step, not its acceptance.
 
 ## Run
 
-Needs Docker with the NVIDIA runtime, 2 GPUs, and about 80 GB of free disk.
+Needs Docker with the NVIDIA runtime and 2 GPUs. The work dir (mounted at `/work`) must be on a disk with **80 GB free**:
+the test models are written there. The run checks this first and stops with a clear message if there is less.
 
 ```bash
-mkdir -p ~/inkling-tests && cd ~/inkling-tests
+WORKDIR=/path/on/a/disk/with/80GB/free/inkling-tests     # not your home dir if / is small
+mkdir -p "$WORKDIR" && cd "$WORKDIR"
 echo 0 > fips_enabled          # FIPS hosts: the image's OpenSSL dies at import unless this file is mounted (harmless elsewhere)
 docker run --rm --gpus '"device=0,1"' --ipc host --shm-size 32g \
   --user "$(id -u):0" -e HOME=/work \
   -v "$PWD/fips_enabled:/proc/sys/crypto/fips_enabled:ro" \
   -v /path/to/Inkling-2-Small:/model:ro \
-  -e IMAGE_REF=sha256:6565f808f94f4a5ff24e2efeee7c9022c60cbd1b84ebb48288d2f7948bb3f1ab \
+  -e IMAGE_REF=sha256:ce773b309b4c67687022340f890867b361b32ae9c40f3a079af9851932503daa \
   -v "$PWD:/work" \
-  btbtyler09/vllm-cuda@sha256:6565f808f94f4a5ff24e2efeee7c9022c60cbd1b84ebb48288d2f7948bb3f1ab
+  btbtyler09/vllm-cuda@sha256:ce773b309b4c67687022340f890867b361b32ae9c40f3a079af9851932503daa
 ```
 
 Image: `btbtyler09/vllm-cuda:inkling2-tests-20261116`, built from this repo's `tests/` with inkling2 model code
@@ -30,7 +32,7 @@ Image: `btbtyler09/vllm-cuda:inkling2-tests-20261116`, built from this repo's `t
   - Without `/model`, about 57 GB is downloaded from huggingface.co instead: only layers 0-6, embeddings, head, vision
     and draft. `-e MAX_MBPS=50` caps the rate.
   - Both paths were verified on a cloud RTX PRO 6000 on 2026-11-16.
-- **Results:** `~/inkling-tests/results.tgz`, rewritten after every arm, so a partial run still returns data.
+- **Results:** `$WORKDIR/results.tgz`, rewritten after every arm, so a partial run still returns data.
   `summary.md` is at the top of the tarball and also next to it. Send `results.tgz` back privately.
 - **Subset:** `-e PHASES="race b12x"`. The `slice` phase must have run once; it is skipped when the slices exist.
 - **Other GPUs:** change `device=0,1`. Inside the container they become GPU 0 and GPU 1.
