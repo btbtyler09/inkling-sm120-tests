@@ -76,6 +76,30 @@ docker run --rm --gpus all --ipc host --user "$(id -u):0" -e HOME=/tmp \
 Pick the groups from the GPU/NUMA list it prints first (indices as `nvidia-smi` shows them). Add
 `-e VLLM_ALLREDUCE_USE_FLASHINFER_PCIE_IPC=1` for a second run with that backend. Output: `ar_bench.json` in `$PWD`.
 
+## New 8-GPU node check (`PHASES=newnode`, ~35 min, full weights, no traffic)
+
+Before production goes live on a new node: the all-reduce test above (TP4 in one socket vs TP6/TP8), then four boots of
+the full model with no requests, to read how much KV fits at 262,144 context and each GPU's memory:
+
+| Arm | Layout |
+|---|---|
+| NB0 | TP6 on GPUs 0-5, no draft |
+| NB | TP6 on GPUs 0-5 + co-located DSpark (layout B) |
+| NC | TP6 on GPUs 0-5 + the drafter on GPU 7 (layout C) |
+| NT4 | TP4 on GPUs 0-3 (one socket) + co-located DSpark |
+
+All with FP8 KV, max-model-len 262,144, max-num-seqs 32, KV sized by `--gpu-memory-utilization 0.92`. The table
+lands in `pub/newnode_summary.md`: all-reduce µs and GB/s per group, KV tokens / max concurrency at 262k, memory per GPU.
+
+```bash
+docker run --rm --gpus all --ipc host --shm-size 32g --user "$(id -u):0" -e HOME=/work \
+  -v "$PWD/fips_enabled:/proc/sys/crypto/fips_enabled:ro" -v /path/to/Inkling-2-Small:/model:ro \
+  -e PHASES="env newnode" -e IMAGE_REF=sha256:fa3d24e264283c923672017d847938b7f12ff201641dd36a7c1ad6599886e30f \
+  -v "$PWD:/work" btbtyler09/vllm-cuda@sha256:fa3d24e264283c923672017d847938b7f12ff201641dd36a7c1ad6599886e30f
+```
+
+`NEWNODE_REHEARSE=1` runs the same phase on the 7-layer slice at TP1 on a 2-GPU box (no NT4).
+
 ## What every arm saves (`pub/arms/<ARM>/`)
 
 - `cmd.txt`: the exact env and command line. `server.log`: the full boot and serve log, with backend selection,

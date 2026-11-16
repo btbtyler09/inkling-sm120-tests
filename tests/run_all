@@ -112,6 +112,37 @@ if has ar; then
       || row ar FAIL "rc=$rc: $(grep -E "Error|FAILED" $P/ar_bench.log | tail -1 | cut -c1-200)"
   else row ar SKIPPED "needs 2+ GPUs"; fi
 fi
+if has newnode; then
+  # New 8-GPU node, before production: all-reduce latency/bandwidth per GPU group, then boot-only KV-fit checks of the
+  # candidate layouts with the FULL model at /model (no traffic, no client data): B0 TP6 no draft, B TP6 + co-located
+  # DSpark, C TP6 + drafter on its own GPU, T4 TP4 on one socket + co-located DSpark. FP8 KV, max-model-len 262144,
+  # MAXSEQ 32, KV sized by --gpu-memory-utilization (KV_GIB=0). NEWNODE_REHEARSE=1: the 7-layer slice at TP1 on 2 GPUs.
+  t=$(date +%s)
+  if [ -z "${INKLING_TESTS_STUB:-}" ] && [ "$NG" -ge 2 ]; then
+    timeout 900 python3 $T/ar_bench.py --groups "${AR_GROUPS:-0,1,2,3;0,1,2,3,4,5;0,1,2,3,4,5,6,7}" --out $P/ar_bench.json > $P/ar_bench.log 2>&1
+    grep -E "^GROUP" $P/ar_bench.log | cut -c1-200 | sed 's/^/NEWNODE /'
+  fi
+  NNDS="--speculative-config $DS7"
+  if [ "${NEWNODE_REHEARSE:-0}" = 1 ]; then
+    NNDIR=$CK7; L_B0="0 1"; L_B="0 1"; L_C="0,1 1"; L_T4=""
+  else
+    NNDIR=/model; L_B0="0,1,2,3,4,5 6"; L_B="0,1,2,3,4,5 6"; L_C="0,1,2,3,4,5,7 6"; L_T4="0,1,2,3 4"
+  fi
+  [ -f $NNDIR/config.json ] || row newnode FAIL "no model at $NNDIR (mount the full weights at /model)"
+  for spec in "NB0|$L_B0|" "NB|$L_B|INKLING2_DSPARK_SPLIT_KV=1" "NC|$L_C|INKLING2_DSPARK_SPLIT_KV=1 INKLING2_DRAFT_DEVICE=cuda:LAST" \
+              "NT4|$L_T4|INKLING2_DSPARK_SPLIT_KV=1"; do
+    IFS='|' read -r tag lay env <<< "$spec"
+    [ -n "$lay" ] || { row $tag SKIPPED "not in rehearsal"; continue; }
+    read -r devs ngpu <<< "$lay"
+    nvis=$(awk -F, '{print NF}' <<< "$devs")
+    [ "$nvis" -le "$NG" ] || { row $tag SKIPPED "needs $nvis GPUs, $NG visible"; continue; }
+    env=${env//cuda:LAST/cuda:$((nvis - 1))}
+    sp=(); [ $tag != NB0 ] && sp=(--speculative-config "$DS7")
+    NGPU=$ngpu EXTRA_SERVE_ARGS="--kv-cache-dtype fp8" arm $tag $devs $NNDIR 0 "$env" "" -- "${sp[@]}"
+  done
+  python3 $T/newnode_summary.py $P > $P/newnode_summary.md 2>&1; cat $P/newnode_summary.md
+  row newnode PASS "$(( $(date +%s)-t )) s (see pub/newnode_summary.md)"
+fi
 if has race; then
   t=$(date +%s); CUDA_VISIBLE_DEVICES=0 timeout 3600 python3 $T/moe_race.py ${INKLING_TESTS_STUB:+--dry-run} --out $P/moe_race.json > $P/moe_race.log 2>&1; rc=$?
   grep -E "^RESULT|ERROR|NUMERICS" $P/moe_race.log | cut -c1-220 | sed 's/^/RACE /'
