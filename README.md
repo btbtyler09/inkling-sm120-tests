@@ -22,14 +22,14 @@ docker run --rm --gpus '"device=0,1"' --ipc host --shm-size 32g \
   --user "$(id -u):0" -e HOME=/work \
   -v "$PWD/fips_enabled:/proc/sys/crypto/fips_enabled:ro" \
   -v /path/to/Inkling-2-Small:/model:ro \
-  -e IMAGE_REF=sha256:863480c5b22381434814487b4249e06d8d8a5393867282e24209ba563ad20529 \
+  -e IMAGE_REF=sha256:9877d9273418048fcdb73607debfc94c9ac6995d4444e1dd0cb03f838c541c44 \
   -v "$PWD:/work" \
-  btbtyler09/vllm-cuda@sha256:863480c5b22381434814487b4249e06d8d8a5393867282e24209ba563ad20529
+  btbtyler09/vllm-cuda@sha256:9877d9273418048fcdb73607debfc94c9ac6995d4444e1dd0cb03f838c541c44
 ```
 
-Image: `btbtyler09/vllm-cuda:inkling2-tests-20261116b`, built from this repo's `tests/` with inkling2 model code
-`inkling2-ink10-rc 43a6097f40`. It adds the NVFP4 drafter arms (D1N4, D1N4H) and the W4P load fix, fetches /metrics
-via Python, and checks every external command at startup.
+Image: `btbtyler09/vllm-cuda:inkling2-tests-20261116c`, built from this repo's `tests/` with inkling2 model code
+`inkling2-ink10-rc 96d7376258`. It has the NVFP4 drafter arms (D1N4, D1N4H), the W4P load fix, the `ar` all-reduce
+phase, /metrics via Python, and a startup check for every external command.
 
 - **Weights:** `-v /path/to/Inkling-2-Small:/model:ro` is the full checkpoint already on disk: the original
   `thinkingmachines` one or the NVFP4 requant. The test models are cut from it; nothing is downloaded. Every tensor is
@@ -48,6 +48,7 @@ via Python, and checks every external command at startup.
 |---|---|---|---|
 | `env` | | GPUs, topology, driver/CUDA, versions, image digest | <1 min |
 | `slice` | | Cuts the 6- and 7-layer test models from `/model`, sha-checked | 5-10 min |
+| `ar` | | Decode all-reduce latency, no model (see below); in the kit, all visible GPUs as one group | 1-3 min |
 | `race` | | MoE kernels at the TP6/TP4 per-GPU expert shapes, M=8-64: Marlin W4A16, b12x W4A16 (heuristic/tuned), b12x W4A4 (static scale), FlashInfer CUTLASS W4A4 (dynamic). Experts-only and whole layer (router + top-8 + experts), numerics vs Marlin and vs fp32 | 15-25 min |
 | `b12x` | MT, BT, MD, BD | End-to-end slice decode: Marlin (M*) vs b12x MoE backend (B*), no draft (*T) and DSpark K=7 (*D) | 40 min |
 | `remote` | R1, T7, D1, D1E | Drafter on its own GPU (R1) vs co-located with CUDA graph (D1) or eager (D1E); T7 = no drafter | 40 min |
@@ -56,6 +57,23 @@ via Python, and checks every external command at startup.
 | `w4a4` | W0, W4, W4P | W4A16 vs W4A4 at every batch size (W4) vs W4A4 for prefill only (W4P): TTFT 32K/128K, decode, logprob drift | 50 min |
 
 **Total about 3-3.5 hours.** Each server arm boots once, takes about 1-2 min including graph capture, then runs its tests.
+
+## All-reduce latency on a multi-GPU box (standalone, no model, ~2-5 min)
+
+Measures decode-size all-reduces (bf16 [M, 4608], M = 1-64 tokens) for GPU groups, e.g. 4 GPUs behind one socket vs 6
+spanning both. It reports which backend vLLM enables per group (custom all-reduce, FlashInfer PCIe IPC, or NCCL), each
+GPU's NUMA node, and p50/p99 µs per call. Decode does ~96 all-reduces per step (2 per layer x 48).
+
+```bash
+docker run --rm --gpus all --ipc host --user "$(id -u):0" -e HOME=/tmp \
+  -v "$PWD/fips_enabled:/proc/sys/crypto/fips_enabled:ro" -v "$PWD:/work" -w /work \
+  --entrypoint /opt/rt/bin/python \
+  btbtyler09/vllm-cuda@sha256:9877d9273418048fcdb73607debfc94c9ac6995d4444e1dd0cb03f838c541c44 \
+  /opt/inkling-tests/ar_bench.py --groups "0,1,2,3;0,1,2,3,4,5"
+```
+
+Pick the groups from the GPU/NUMA list it prints first (indices as `nvidia-smi` shows them). Add
+`-e VLLM_ALLREDUCE_USE_FLASHINFER_PCIE_IPC=1` for a second run with that backend. Output: `ar_bench.json` in `$PWD`.
 
 ## What every arm saves (`pub/arms/<ARM>/`)
 

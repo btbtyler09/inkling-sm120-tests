@@ -7,7 +7,7 @@
 # memory every second for the whole run. On a 7-layer slice the draft is never accepted: drafter arms measure its COST.
 set -u
 T=/opt/inkling-tests; W=${WORK:-/work}; cd "$W" || { echo "WORK=$W missing: mount a host dir there"; exit 2; }
-ALL="env slice race b12x remote fp8 kdyn w4a4"
+ALL="env slice ar race b12x remote fp8 kdyn w4a4"
 PHASES=${PHASES:-$ALL}; P=$W/pub; mkdir -p $P/arms
 exec > >(tee -a $P/console.log) 2>&1
 echo "== inkling 2-GPU test set $(date -u +%FT%TZ) phases: $PHASES"
@@ -101,6 +101,17 @@ arm(){ local tag=$1 devs=$2 dir=$3 kv=$4 env=$5 tests=$6; shift 7
   grep -E "SpecDecoding metrics" $A/server.log | tail -1 | cut -c1-300 | sed "s/^/RES $tag spec /"
   local warn=""; for f in metrics_before metrics_after; do grep -q "^vllm:" $A/$f.txt 2>/dev/null || warn="$warn $f.txt has no vllm: metrics;"; done
   row $tag PASS "$(( $(date +%s)-t0 )) s${warn:+; WARN$warn}"; }
+if has ar; then
+  # decode all-reduce latency, no model (AR_GROUPS: ';'-separated GPU lists; default all visible GPUs as one group)
+  t=$(date +%s); G=${AR_GROUPS:-$(seq -s, 0 $((NG - 1)))}
+  if [ -n "${INKLING_TESTS_STUB:-}" ]; then row ar SKIPPED "rehearsal (needs real GPUs)"
+  elif [ "$NG" -ge 2 ]; then
+    timeout 900 python3 $T/ar_bench.py --groups "$G" --out $P/ar_bench.json > $P/ar_bench.log 2>&1; rc=$?
+    grep -E "^GROUP|M= *(1|8|64) " $P/ar_bench.log | cut -c1-200 | sed 's/^/AR /'
+    [ $rc = 0 ] && grep -q AR_BENCH_DONE $P/ar_bench.log && row ar PASS "$(( $(date +%s)-t )) s; groups $G" \
+      || row ar FAIL "rc=$rc: $(grep -E "Error|FAILED" $P/ar_bench.log | tail -1 | cut -c1-200)"
+  else row ar SKIPPED "needs 2+ GPUs"; fi
+fi
 if has race; then
   t=$(date +%s); CUDA_VISIBLE_DEVICES=0 timeout 3600 python3 $T/moe_race.py ${INKLING_TESTS_STUB:+--dry-run} --out $P/moe_race.json > $P/moe_race.log 2>&1; rc=$?
   grep -E "^RESULT|ERROR|NUMERICS" $P/moe_race.log | cut -c1-220 | sed 's/^/RACE /'
