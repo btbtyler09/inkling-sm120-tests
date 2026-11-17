@@ -32,6 +32,7 @@ trap 'kill $GPULOG 2>/dev/null; pack' EXIT
 { echo "image: ${IMAGE_REF:-unknown (pass -e IMAGE_REF=<digest>)}"; cat $T/VERSION
   python3 -c "import vllm, torch, flashinfer; print('vllm', vllm.__version__, '| torch', torch.__version__, '| cuda', torch.version.cuda, '| flashinfer', flashinfer.__version__)"
   nvidia-smi; nvidia-smi topo -m; nvidia-smi -q -d CLOCK,POWER | grep -E "Product|Max|Limit" | head -40
+  grep -E "MemTotal|MemAvailable" /proc/meminfo; nproc
   echo "fips_enabled seen by the container: $(cat /proc/sys/crypto/fips_enabled 2>/dev/null)"; } > $P/env.txt 2>&1
 NG=$(nvidia-smi -L | wc -l)
 row env PASS "$NG GPU(s)"
@@ -121,7 +122,9 @@ if has newnode; then
   # MAXSEQ 32, KV sized by --gpu-memory-utilization (KV_GIB=0). NEWNODE_REHEARSE=1: the 7-layer slice at TP1 on 2 GPUs.
   t=$(date +%s)
   if [ -z "${INKLING_TESTS_STUB:-}" ] && [ "$NG" -ge 2 ]; then
-    timeout 900 python3 $T/ar_bench.py --groups "${AR_GROUPS:-0,1,2,3;0,1,2,3,4,5;0,1,2,3,4,5,6,7}" --out $P/ar_bench.json > $P/ar_bench.log 2>&1
+    NN_AR=${AR_GROUPS:-0,1,2,3;0,1,2,3,4,5;0,1,2,3,4,5,6,7}
+    [ "${NEWNODE_REHEARSE:-0}" = 1 ] && NN_AR=${AR_GROUPS:-$(seq -s, 0 $((NG - 1)))}   # rehearsal: the GPUs this box has
+    timeout 900 python3 $T/ar_bench.py --groups "$NN_AR" --out $P/ar_bench.json > $P/ar_bench.log 2>&1
     grep -E "^GROUP" $P/ar_bench.log | cut -c1-200 | sed 's/^/NEWNODE /'
   fi
   # Production serve settings: the kit's prod_env.sh defaults, overridden by the site's own site.env when it is mounted at
@@ -146,11 +149,20 @@ print(v if v is not None else '')" "$1"; }
   SAVE_BASEENV=$BASEENV
   BASEENV="HF_HUB_OFFLINE=1 VLLM_CUDA_CACHE_ROOT=$W/kc VLLM_USE_SIMPLE_KV_OFFLOAD=1 VLLM_INKLING2_ENFORCE_TOOL_CHOICE=$NN_TC INKLING2_SPLIT_KV_STATIC=$NN_SS INKLING2_REUSE_REL_LOGITS=$NN_RR INKLING2_LOCAL_SPLIT_KV=$NN_LS INKLING2_GLOBAL_SPLIT_TUNED=$NN_GS VLLM_ALLREDUCE_USE_FLASHINFER_PCIE_IPC=0"
   if [ "${NEWNODE_REHEARSE:-0}" = 1 ]; then
+    # dev box: the 7-layer slice at TP1 with the KV / offload sizes proven on 2-GPU boxes (KV 14 GiB, offload 16 GiB);
+    # the production values are still printed above and used on the real node
+    q=$(awk '/MemAvailable/ {print int($2 / 4194304)}' /proc/meminfo)   # 25% of available RAM, GiB
+    NN_KV=${NEWNODE_REHEARSE_KV_GIB:-14}; NN_OFF=${NEWNODE_REHEARSE_OFFLOAD_GIB:-$(( q < 16 ? q : 16 ))}
+    echo "NEWNODE rehearsal: KV_GIB=$NN_KV OFFLOAD_GIB=$NN_OFF on the slice (production values above apply to the real node)" \
+      | tee -a $P/newnode_settings.txt
     NNDIR=$CK7; L_B0="0 1"; L_B="0 1"; L_C="0,1 1"; L_T4=""
   else
     NNDIR=/model; L_B0="0,1,2,3,4,5 6"; L_B="0,1,2,3,4,5 6"; L_C="0,1,2,3,4,5,7 6"; L_T4="0,1,2,3 4"
   fi
   [ -f $NNDIR/config.json ] || row newnode FAIL "no model at $NNDIR (mount the full weights at /model)"
+  # host RAM, for the record only (the new node has the current box's RAM; the rehearsal sizes its offload to fit)
+  avail=$(awk '/MemAvailable/ {print int($2 / 1048576)}' /proc/meminfo)
+  echo "NEWNODE host RAM available ${avail} GiB; KV offload OFFLOAD_GIB=${NN_OFF}" | tee -a $P/newnode_settings.txt
   for spec in "NB0|$L_B0|" "NB|$L_B|" "NC|$L_C|INKLING2_DRAFT_DEVICE=cuda:LAST" "NT4|$L_T4|"; do
     IFS='|' read -r tag lay env <<< "$spec"
     [ -n "$lay" ] || { row $tag SKIPPED "not in rehearsal"; continue; }

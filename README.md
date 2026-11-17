@@ -98,11 +98,13 @@ tokens, max concurrency at 262k, and used/total memory per GPU.
 ```bash
 docker run --rm --gpus all --ipc host --shm-size 32g --user "$(id -u):0" -e HOME=/work \
   -v "$PWD/fips_enabled:/proc/sys/crypto/fips_enabled:ro" -v /path/to/Inkling-2-Small:/model:ro \
-  -e PHASES="env newnode" -e IMAGE_REF=sha256:c162f35aac1e6f8cc81ea26e27d7e1811073db29361e2e6016b62d3f04f55c47 \
-  -v "$PWD:/work" btbtyler09/vllm-cuda@sha256:c162f35aac1e6f8cc81ea26e27d7e1811073db29361e2e6016b62d3f04f55c47
+  -e PHASES="env newnode" -e IMAGE_REF=sha256:c09f5e4dae4100c3801966d5f2c0125dc6d91fde1c010d8baba8aa747b91b31d \
+  -v "$PWD:/work" btbtyler09/vllm-cuda@sha256:c09f5e4dae4100c3801966d5f2c0125dc6d91fde1c010d8baba8aa747b91b31d
 ```
 
-`NEWNODE_REHEARSE=1` runs the same phase on the 7-layer slice at TP1 on a 2-GPU box (no NT4).
+`NEWNODE_REHEARSE=1` runs the same phase on the 7-layer slice at TP1 on a 2-GPU box (no NT4). The all-reduce test
+then uses the visible GPUs as one group, and the boots use KV 14 GiB and an offload of min(16 GiB, 25% of available
+RAM). The production values are still printed.
 
 ## What every arm saves (`pub/arms/<ARM>/`)
 
