@@ -119,6 +119,14 @@ kb(){ local ph=$1 img=$2 bd=$3 log=$4 n=build-bundle-$S-$1
   local pw=(-v "$HERE/bundle_tools/prewarm_sampler.py:$TOOLS/bundle/prewarm_sampler.py:ro")
   # verify (and production, create-nemotron.sh): FlashInfer load-only for the bundled JIT modules, see bundle_tools/vllm_cuda_fi_load_only.py
   [ "$ph" = verify ] && pw+=("${FI_LOAD_ONLY[@]}")
+  # verify: before the server stops, copy every Triton cache entry compiled at runtime (key dirs with a file newer than the
+  # entrypoint's .bundle_ready marker) from the container's tmpfs working copy to /out/verify/triton-runtime/ (diagnosis of a
+  # capture/verify key mismatch; a harvest source). Read-only for the bundle; never changes the verdict.
+  local hook='[ "$KB_MODE" = verify ] || exit 0; w=$(ls -d /tmp/kcache-* 2>/dev/null | tail -1); [ -f "$w/.bundle_ready" ] || exit 0
+    mkdir -p /out/verify/triton-runtime; n=0
+    for k in $(find "$w/triton" -mindepth 2 -maxdepth 2 -type f -newer "$w/.bundle_ready" -printf "%h\n" | sort -u); do
+      cp -a "$k" /out/verify/triton-runtime/ && n=$((n + 1)); done; echo "verify: copied $n runtime-compiled triton key dirs to /out/verify/triton-runtime"'
+  [ "$ph" = verify ] && pw+=(-e "POST_SWEEP_HOOK=$hook")
   docker rm -f "$n" >/dev/null 2>&1 || true
   docker run -d --pull never --name "$n" --label vllm-cuda.created-by=build-bundle.sh \
     --user 2000:0 --read-only --tmpfs "/tmp:rw,exec,nosuid,size=$TMPFS_SIZE" \
