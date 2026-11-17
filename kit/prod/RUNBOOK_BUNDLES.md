@@ -33,6 +33,13 @@ The serve log shows one `vllm-cuda: flashinfer load-only <module>` line per bund
 verify failed this way is still good: rerun only the verify with `VERIFY_ONLY=<OUT_DIR>/capture/bundle-nemotron.tar.gz` and a
 NEW OUT_DIR (skips the capture, ~25-45 min).
 
+**Triton harvest (when verify recompiles Triton kernels the capture already had).** Verify copies every Triton kernel it
+compiled at runtime to `OUT_DIR/verify/triton-runtime/`. `./harvest-bundle.sh CAPTURE_TARBALL VERIFY_OUT_DIR NEW_DIR` adds them
+to the capture bundle and writes `NEW_DIR/bundle-<svc>.tar.gz` + `.sha256` (+ `HARVEST_<svc>.txt`); then run `VERIFY_ONLY=` on
+that tarball twice (two new OUT_DIRs: both must PASS, which shows the bundle is boot-stable). Optional
+`NEMOTRON_KV_CACHE_BYTES=<bytes per GPU>` (site.env, and the same value for capture, verify and production) pins the KV pool
+instead of 0.90-of-free-memory, so every boot sizes its caches identically.
+
 **Build kernel bundles** (dev box, Docker + idle RTX PRO 6000s; nothing goes to the network). Nemotron needs a bundle (this image
 cannot compile its kernels); the aux bundles only need rebuilding if a manifest stops matching (refused at boot, loud).
 1. `docker pull btbtyler09/vllm-cuda@sha256:feef2c370dca9724e378db3ed8e688ada69dafbcfadcae74f681aad5a67c23d5` (-full, 14.8 GB) and

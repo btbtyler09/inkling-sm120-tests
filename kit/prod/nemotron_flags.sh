@@ -16,6 +16,12 @@ nemotron_flags(){
   esac
   [[ "${NEMOTRON_OFFLOAD_GIB:-64}" =~ ^[0-9]+$ ]] || { echo "ERROR: NEMOTRON_OFFLOAD_GIB must be a whole number of GiB, 0 = off (got '${NEMOTRON_OFFLOAD_GIB}')" >&2; return 1; }
   [ "${NEMOTRON_OFFLOAD_GIB:-64}" = 0 ] || off=(--kv-offloading-size "${NEMOTRON_OFFLOAD_GIB:-64}")
+  # NEMOTRON_KV_CACHE_BYTES (opt-in, per GPU): a FIXED KV pool instead of the 0.90-of-free-memory sizing, so every boot (capture,
+  # verify, prod) gets the same block count and Triton specializes its kernels identically. Unset = today's behaviour. Capture,
+  # verify and prod must all use the same value (the bundle's Triton kernels are only reused then).
+  if [ -n "${NEMOTRON_KV_CACHE_BYTES:-}" ]; then
+    [[ "$NEMOTRON_KV_CACHE_BYTES" =~ ^[0-9]+$ ]] || { echo "ERROR: NEMOTRON_KV_CACHE_BYTES must be a whole number of bytes (got '$NEMOTRON_KV_CACHE_BYTES')" >&2; return 1; }
+    off+=(--kv-cache-memory-bytes "$NEMOTRON_KV_CACHE_BYTES"); fi
   NEM_FLAGS=(--tensor-parallel-size 2 --max-model-len 262144 --max-num-seqs 64 --max-num-batched-tokens 8192
     --gpu-memory-utilization 0.90 --kv-cache-dtype fp8
     --enable-prefix-caching --mamba-cache-mode align --enable-chunked-prefill
