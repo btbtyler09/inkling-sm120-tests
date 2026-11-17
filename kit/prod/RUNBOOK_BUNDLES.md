@@ -24,6 +24,15 @@ layers of the image (a layer-by-layer review sees them; a squashed rebuild would
 Scans 2026-11-17: Trivy 0.69.1 0 CRITICAL/HIGH, 14 MEDIUM; Grype 0.121.1 0 CRITICAL/HIGH, 135 MEDIUM, 22 LOW; 0 secrets.
 **NOT yet run on a GPU with this image:** Nemotron end to end (bundle, boot, checks), the one-image Inkling/aux boots.
 
+**FlashInfer load-only (fix of 2026-11-17).** Nemotron's bundle holds FlashInfer JIT modules (XQA spec-decode, FA2 paged
+prefill) that are not in the image's AOT set. FlashInfer 0.7.3 runs ninja for every JIT module at load; because the bundle is
+copied to a fresh `/tmp/kcache-*` per boot, ninja saw changed paths and tried to recompile with nvcc (verify FAIL, exit 127).
+`fi_load_only.sh` bind-mounts `bundle_tools/vllm_cuda_fi_load_only.{py,pth}` and sets `VLLM_CUDA_FI_LOAD_ONLY=1` (verify and
+`create-nemotron.sh`): a bundled module's `.so` is loaded directly, never rebuilt; a module NOT in the bundle still fails loudly.
+The serve log shows one `vllm-cuda: flashinfer load-only <module>` line per bundled module. A capture that passed but whose
+verify failed this way is still good: rerun only the verify with `VERIFY_ONLY=<OUT_DIR>/capture/bundle-nemotron.tar.gz` and a
+NEW OUT_DIR (skips the capture, ~25-45 min).
+
 **Build kernel bundles** (dev box, Docker + idle RTX PRO 6000s; nothing goes to the network). Nemotron needs a bundle (this image
 cannot compile its kernels); the aux bundles only need rebuilding if a manifest stops matching (refused at boot, loud).
 1. `docker pull btbtyler09/vllm-cuda@sha256:feef2c370dca9724e378db3ed8e688ada69dafbcfadcae74f681aad5a67c23d5` (-full, 14.8 GB) and

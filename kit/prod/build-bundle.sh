@@ -22,6 +22,8 @@
 #   FIPS_ENABLED_OVERRIDE_FILE  as in site.env (a file containing 0, mounted over /proc/sys/crypto/fips_enabled)
 #   SHREW_VARIANT fp8-v0.5 (default) | gptq-v0.4   (shrew-ocr only; as in site.env)
 #   VERIFY_SOAK_MIN 5 (default)   BUILD_SOAK_MIN 2 (default)   TMPFS_SIZE 64g (default; /tmp of each container, RAM-backed)
+#   VERIFY_ONLY   path to a capture tarball (OUT_DIR/capture/bundle-<svc>.tar.gz of an earlier run): skip step 2, verify
+#                 and publish that tarball (same preflight; OUT_DIR must be a NEW directory)
 # Then on the production box: tar xzf bundle-<svc>.tar.gz -C <bundle parent> (RUNBOOK "Build kernel bundles").
 set -euo pipefail
 die(){ echo "ERROR: $*" >&2; exit 1; }
@@ -34,6 +36,9 @@ SHIP_IMAGE=${SHIP_IMAGE:-btbtyler09/vllm-cuda:0.34.0rc1.dev307-cu130-ink11nemo-r
 VERIFY_SOAK_MIN=${VERIFY_SOAK_MIN:-5}; BUILD_SOAK_MIN=${BUILD_SOAK_MIN:-2}; TMPFS_SIZE=${TMPFS_SIZE:-64g}
 [[ "$VERIFY_SOAK_MIN" =~ ^[0-9]+$ && "$BUILD_SOAK_MIN" =~ ^[0-9]+$ ]] || die "VERIFY_SOAK_MIN / BUILD_SOAK_MIN must be whole minutes"
 TOOLS=/usr/local/share/vllm-cuda/tools   # the image's own kernel_bundle.sh / traffic_sweep.py (same files as the kit's packaging/bundle)
+. "$HERE/fi_load_only.sh"   # FI_LOAD_ONLY=(mounts + env)
+if [ -n "${VERIFY_ONLY:-}" ]; then VERIFY_ONLY=$(cd "$(dirname "$VERIFY_ONLY")" 2>/dev/null && pwd)/$(basename "$VERIFY_ONLY")
+  [ -s "$VERIFY_ONLY" ] || die "VERIFY_ONLY $VERIFY_ONLY: no such tarball"; fi
 T0=$(date +%s); el(){ local s=$(( $(date +%s) - $1 )); printf '%dm%02ds' $((s / 60)) $((s % 60)); }
 step(){ echo; echo "=== [$1] $2   (expected $3; started $(date -u +%H:%M:%SZ), total so far $(el $T0))"; }
 
@@ -112,6 +117,8 @@ printf '%s\n' "${FL[@]}" > "$O/logs/serve_flags.txt"
 kb(){ local ph=$1 img=$2 bd=$3 log=$4 n=build-bundle-$S-$1
   # the kit's prewarm_sampler.py (image copy + Nemotron VL's llm_config vocab) replaces the image's, read-only
   local pw=(-v "$HERE/bundle_tools/prewarm_sampler.py:$TOOLS/bundle/prewarm_sampler.py:ro")
+  # verify (and production, create-nemotron.sh): FlashInfer load-only for the bundled JIT modules, see bundle_tools/vllm_cuda_fi_load_only.py
+  [ "$ph" = verify ] && pw+=("${FI_LOAD_ONLY[@]}")
   docker rm -f "$n" >/dev/null 2>&1 || true
   docker run -d --pull never --name "$n" --label vllm-cuda.created-by=build-bundle.sh \
     --user 2000:0 --read-only --tmpfs "/tmp:rw,exec,nosuid,size=$TMPFS_SIZE" \
@@ -134,11 +141,18 @@ kb(){ local ph=$1 img=$2 bd=$3 log=$4 n=build-bundle-$S-$1
   echo "  $ph container exited rc=$rc after $(el $t); log $log"; tail -4 "$log" | sed 's/^/  | /'; }
 
 # ---- 2 capture on the BUILD image
+TB=$O/capture/$B.tar.gz
+if [ -n "${VERIFY_ONLY:-}" ]; then
+  step 2/4 "capture SKIPPED (VERIFY_ONLY): using $VERIFY_ONLY" "<1 min"
+  tar -tzf "$VERIFY_ONLY" "$B/manifest.json" >/dev/null 2>&1 || die "VERIFY_ONLY tarball has no $B/manifest.json (not a $S capture tarball)"
+  cp "$VERIFY_ONLY" "$TB"; echo "capture skipped; tarball from $VERIFY_ONLY" > "$O/logs/capture.log"
+else
 [ "$S" = nemotron ] && E2="30-60 min" || E2="10-20 min"
 step 2/4 "capture: $BUILD_IMAGE boots $S with the production flags + traffic sweep" "$E2"
 kb build "$BUILD_IMAGE" "/out/capture/$B" "$O/logs/capture.log"
 grep -q "BUNDLE BUILD PASS" "$O/logs/capture.log" || die "capture FAILED: $(grep -E 'BOOT FAILED|BUNDLE BUILD' "$O/logs/capture.log" | tail -2 | cut -c1-300) -- logs: $O/logs/capture.log, $O/capture/$B/serve_build.log"
-TB=$O/capture/$B.tar.gz; [ -s "$TB" ] || die "capture wrote no tarball ($TB)"
+fi
+[ -s "$TB" ] || die "capture wrote no tarball ($TB)"
 SHA=$(sha256sum < "$TB" | cut -c1-64); echo "bundle tarball $(du -h "$TB" | cut -f1) sha256 $SHA"
 grep -m1 -E '^manifest:' "$O/logs/capture.log" | cut -c1-300 || true
 

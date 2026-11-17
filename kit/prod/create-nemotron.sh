@@ -40,6 +40,7 @@ RT=$NEMOTRON_RT
 B=(); if [ "$NEMOTRON_NO_BUNDLE" != 1 ]; then
   [ -f "$NEMOTRON_BUNDLE/manifest.json" ] || die "$NEMOTRON_BUNDLE/manifest.json missing (extract bundle-nemotron.tar.gz under $(dirname "$NEMOTRON_BUNDLE"), RUNBOOK 'Nemotron'; or NEMOTRON_NO_BUNDLE=1)"
   B=(-v "$NEMOTRON_BUNDLE:/opt/kernel-bundles/bundle-nemotron:ro" -e KERNEL_BUNDLE=/opt/kernel-bundles -e KERNEL_BUNDLE_REQUIRED=1 -e KERNEL_BUNDLE_STRICT=0)
+  . "$(dirname "$0")/fi_load_only.sh"; B+=("${FI_LOAD_ONLY[@]}")   # load the bundle's FlashInfer JIT .so files without ninja/nvcc
 else echo "WARNING: NEMOTRON_NO_BUNDLE=1: no kernel bundle (kernels outside FlashInfer's AOT set cannot compile on this image)"; fi
 DR_ERR=$(mktemp); trap 'rm -f "$DR_ERR"' EXIT
 docker run -d --pull never --name "$N" \
