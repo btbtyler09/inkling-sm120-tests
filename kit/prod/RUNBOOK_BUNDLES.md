@@ -7,7 +7,12 @@ Super VL), `vllm/entrypoints/openai/chat_completion/stream_processor.py` (0089: 
 flashinfer / CUDA versions as ink11kva, so **the aux bundles shipped with this kit still match** (checked against their
 manifests). `site.env`: one `IMAGE=` + `EXPECT_DIGEST=` for every service (`site.env.example`). `start-all.sh` starts
 `vllm-nemotron` right after Inkling when `NEMOTRON_GPUS` is set. Old `NEMOTRON_IMAGE` / `NEMOTRON_DIGEST` lines: delete them.
-**r2 (the image to deploy, `sha256:22d7a0cc…`).** One layer on top of ink11nemo-minimal removes three wheels whose bundled
+**r3 (the image to deploy, `sha256:ab4a1359…`)** = r2 below + one layer that `dpkg --purge`s cuda-compat-13-0 (82 Grype MEDIUM,
+no newer package from NVIDIA). It was on no library path; libcuda always comes from the host driver. **The host driver must be
+>= 580 (CUDA 13.0): the image has no forward-compat fallback.** Libraries identical to r2, so bundles built with r2 are valid.
+Scans 2026-11-17: Trivy 0 CRITICAL/HIGH, 14 MEDIUM; Grype 0 CRITICAL/HIGH, 53 MEDIUM (all "no fix available", except 5 CPython
+3.12.16 ones fixed only in 3.13+: dispositioned, re-checked weekly for a 3.12.17), 22 LOW; 0 secrets.
+**r2 (`sha256:22d7a0cc…`).** One layer on top of ink11nemo-minimal removes three wheels whose bundled
 ffmpeg carried HIGH CVEs (exactly the files of their own pip RECORDs; listed in its `OVERLAY.txt`): opencv-python-headless
 5.0.0.93 (ffmpeg 8.1.1: 22 Grype HIGH, fixed upstream but no newer wheel), PyAV 19.0.2 (ffmpeg 9.0.2: CVE-2026-107696, published
 2026-10-08, no fix released) and PyNvVideoCodec 2.0.4 (unused). Images, text and pooling are unaffected (images go through PIL).
@@ -22,11 +27,11 @@ Scans 2026-11-17: Trivy 0.69.1 0 CRITICAL/HIGH, 14 MEDIUM; Grype 0.121.1 0 CRITI
 **Build kernel bundles** (dev box, Docker + idle RTX PRO 6000s; nothing goes to the network). Nemotron needs a bundle (this image
 cannot compile its kernels); the aux bundles only need rebuilding if a manifest stops matching (refused at boot, loud).
 1. `docker pull btbtyler09/vllm-cuda@sha256:feef2c370dca9724e378db3ed8e688ada69dafbcfadcae74f681aad5a67c23d5` (-full, 14.8 GB) and
-   `docker pull btbtyler09/vllm-cuda@sha256:22d7a0cc2f77f5ce16a04b84bd33931fc7a7f3986a5b77f679969f8feb043ce8` (-r2-minimal, 11.9 GB).
+   `docker pull btbtyler09/vllm-cuda@sha256:ab4a135936f387010f8f408304ff8736a27fce6aeba236287be05437e781f58b` (-r3-minimal, 11.9 GB).
 2. Nemotron (2 idle cards, the runtime dir production uses, config.json sha256 `35189a80…`), from this `prod/` directory:
    ```
    BUILD_IMAGE=btbtyler09/vllm-cuda@sha256:feef2c370dca9724e378db3ed8e688ada69dafbcfadcae74f681aad5a67c23d5 \
-   SHIP_IMAGE=btbtyler09/vllm-cuda@sha256:22d7a0cc2f77f5ce16a04b84bd33931fc7a7f3986a5b77f679969f8feb043ce8 \
+   SHIP_IMAGE=btbtyler09/vllm-cuda@sha256:ab4a135936f387010f8f408304ff8736a27fce6aeba236287be05437e781f58b \
    FIPS_ENABLED_OVERRIDE_FILE=<as in site.env, if the box is FIPS> \
    ./build-nemotron-bundle.sh GPU-aaaa,GPU-bbbb /path/to/nemotron-3.5-super-vl-runtime /data/bb-nemotron
    ```
@@ -42,11 +47,11 @@ cannot compile its kernels); the aux bundles only need rebuilding if a manifest 
 3. Copy `bundle-nemotron.tar.gz` and `.sha256` to the production box, then there: `sha256sum -c bundle-nemotron.tar.gz.sha256`,
    `mkdir -p "$WORKDIR/nemotron-bundles" && tar xzf bundle-nemotron.tar.gz -C "$WORKDIR/nemotron-bundles/"`
    (gives `bundle-nemotron/manifest.json`, the default `NEMOTRON_BUNDLE`). Aux: as in "Kernel cache" below.
-4. `site.env`: `IMAGE` + `EXPECT_DIGEST` = ink11nemo-r2-minimal (`sha256:22d7a0cc…`), `NEMOTRON_GPUS=` (2 cards not in `GPUS`), `NEMOTRON_DIR=`.
+4. `site.env`: `IMAGE` + `EXPECT_DIGEST` = ink11nemo-r3-minimal (`sha256:ab4a1359…`; host driver >= 580), `NEMOTRON_GPUS=` (2 cards not in `GPUS`), `NEMOTRON_DIR=`.
    Then `./start-all.sh` (or `./create-nemotron.sh` alone).
 
 **First boot: what to check.**
-- Inkling: `create-inkling.sh` prints `image: ink11 (KVA) overlay present`; `docker inspect -f '{{index .Config.Labels "vllm-cuda.image-digest"}}' vllm-inkling` = `sha256:22d7a0cc…`; then POST_LIVE_TESTS 1, 3, 4 as before.
+- Inkling: `create-inkling.sh` prints `image: ink11 (KVA) overlay present`; `docker inspect -f '{{index .Config.Labels "vllm-cuda.image-digest"}}' vllm-inkling` = `sha256:ab4a1359…`; then POST_LIVE_TESTS 1, 3, 4 as before.
 - Nemotron: `create-nemotron.sh` ends with `NEMOTRON OK` (bundle applied, no runtime compile, CPU KV offload on; any of those
   missing = `ERROR` + exit 1, container left running for `docker logs vllm-nemotron`). Then, with
   `BASE=http://<nemotron host:port> MODEL=nemotron-3.5-super-vl`: `python3 post_live.py text`, `tools 20`, `json 20`, each also with

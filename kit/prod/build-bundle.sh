@@ -17,7 +17,8 @@
 # Any failure: "ERROR: ..." and exit 1; logs stay in OUT_DIR/logs and the bundle dirs. Nothing is retried, nothing falls back.
 # Settings (environment):
 #   BUILD_IMAGE   default the ink11nemo-full tag (or <registry>/vllm-cuda@sha256:feef2c37...)   BUILD-ONLY image, never serve it
-#   SHIP_IMAGE    default the ink11nemo-r2-minimal tag (or <registry>/vllm-cuda@sha256:22d7a0cc...)  = site.env IMAGE
+#   SHIP_IMAGE    default the ink11nemo-r3-minimal tag (or <registry>/vllm-cuda@sha256:ab4a1359...)  = site.env IMAGE
+#                 (a bundle built with r2 as SHIP_IMAGE is valid for r3: same libraries and flags)
 #   FIPS_ENABLED_OVERRIDE_FILE  as in site.env (a file containing 0, mounted over /proc/sys/crypto/fips_enabled)
 #   SHREW_VARIANT fp8-v0.5 (default) | gptq-v0.4   (shrew-ocr only; as in site.env)
 #   VERIFY_SOAK_MIN 5 (default)   BUILD_SOAK_MIN 2 (default)   TMPFS_SIZE 64g (default; /tmp of each container, RAM-backed)
@@ -29,7 +30,7 @@ S=${1:-}; G=${2:-}; MD=${3:-}; O=${4:-}
 HERE=$(cd "$(dirname "$0")" && pwd)
 . "$HERE/nemotron_flags.sh"; . "$HERE/aux_flags.sh"
 BUILD_IMAGE=${BUILD_IMAGE:-btbtyler09/vllm-cuda:0.34.0rc1.dev307-cu130-ink11nemo-full}
-SHIP_IMAGE=${SHIP_IMAGE:-btbtyler09/vllm-cuda:0.34.0rc1.dev307-cu130-ink11nemo-r2-minimal}
+SHIP_IMAGE=${SHIP_IMAGE:-btbtyler09/vllm-cuda:0.34.0rc1.dev307-cu130-ink11nemo-r3-minimal}
 VERIFY_SOAK_MIN=${VERIFY_SOAK_MIN:-5}; BUILD_SOAK_MIN=${BUILD_SOAK_MIN:-2}; TMPFS_SIZE=${TMPFS_SIZE:-64g}
 [[ "$VERIFY_SOAK_MIN" =~ ^[0-9]+$ && "$BUILD_SOAK_MIN" =~ ^[0-9]+$ ]] || die "VERIFY_SOAK_MIN / BUILD_SOAK_MIN must be whole minutes"
 TOOLS=/usr/local/share/vllm-cuda/tools   # the image's own kernel_bundle.sh / traffic_sweep.py (same files as the kit's packaging/bundle)
