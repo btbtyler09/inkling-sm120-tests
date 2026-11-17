@@ -9,7 +9,7 @@
 #   1 preflight   images, GPUs, model, disk                                                      ~1 min
 #   2 capture     BUILD image (-full, has the JIT compilers) boots the service with its PRODUCTION serve flags (the same
 #                 definition create-nemotron.sh / create-aux.sh use), drives the image's traffic sweep (text ladder up to
-#                 max-num-seqs, long prompts, images/video for VL, pooling for embed/rerank) + a 2-min soak, compiles the
+#                 max-num-seqs, long prompts, images for VL (no video: r2 has no decoder), pooling for embed/rerank) + a 2-min soak, compiles the
 #                 sampler variants, writes the bundle                                    nemotron ~30-60 min; aux ~10-20 min
 #   3 verify      SHIP image (-minimal, no compiler) boots from a FRESH extraction of the tarball with the same flags and
 #                 the same sweep + a VERIFY_SOAK_MIN soak; PASS only if nothing was compiled at runtime   nemotron ~25-45 min
@@ -17,7 +17,7 @@
 # Any failure: "ERROR: ..." and exit 1; logs stay in OUT_DIR/logs and the bundle dirs. Nothing is retried, nothing falls back.
 # Settings (environment):
 #   BUILD_IMAGE   default the ink11nemo-full tag (or <registry>/vllm-cuda@sha256:feef2c37...)   BUILD-ONLY image, never serve it
-#   SHIP_IMAGE    default the ink11nemo-minimal tag (or <registry>/vllm-cuda@sha256:1e567856...)  = site.env IMAGE
+#   SHIP_IMAGE    default the ink11nemo-r2-minimal tag (or <registry>/vllm-cuda@sha256:22d7a0cc...)  = site.env IMAGE
 #   FIPS_ENABLED_OVERRIDE_FILE  as in site.env (a file containing 0, mounted over /proc/sys/crypto/fips_enabled)
 #   SHREW_VARIANT fp8-v0.5 (default) | gptq-v0.4   (shrew-ocr only; as in site.env)
 #   VERIFY_SOAK_MIN 5 (default)   BUILD_SOAK_MIN 2 (default)   TMPFS_SIZE 64g (default; /tmp of each container, RAM-backed)
@@ -29,7 +29,7 @@ S=${1:-}; G=${2:-}; MD=${3:-}; O=${4:-}
 HERE=$(cd "$(dirname "$0")" && pwd)
 . "$HERE/nemotron_flags.sh"; . "$HERE/aux_flags.sh"
 BUILD_IMAGE=${BUILD_IMAGE:-btbtyler09/vllm-cuda:0.34.0rc1.dev307-cu130-ink11nemo-full}
-SHIP_IMAGE=${SHIP_IMAGE:-btbtyler09/vllm-cuda:0.34.0rc1.dev307-cu130-ink11nemo-minimal}
+SHIP_IMAGE=${SHIP_IMAGE:-btbtyler09/vllm-cuda:0.34.0rc1.dev307-cu130-ink11nemo-r2-minimal}
 VERIFY_SOAK_MIN=${VERIFY_SOAK_MIN:-5}; BUILD_SOAK_MIN=${BUILD_SOAK_MIN:-2}; TMPFS_SIZE=${TMPFS_SIZE:-64g}
 [[ "$VERIFY_SOAK_MIN" =~ ^[0-9]+$ && "$BUILD_SOAK_MIN" =~ ^[0-9]+$ ]] || die "VERIFY_SOAK_MIN / BUILD_SOAK_MIN must be whole minutes"
 TOOLS=/usr/local/share/vllm-cuda/tools   # the image's own kernel_bundle.sh / traffic_sweep.py (same files as the kit's packaging/bundle)
@@ -42,7 +42,9 @@ case $S in
   nemotron)
     NEMOTRON_SPEC=mtp3; nemotron_flags || exit 1   # the bundle is mtp3's (create-nemotron.sh's default), NEMOTRON_OFFLOAD_GIB as site
     RT=$NEMOTRON_RT; NAME=$NEMOTRON_SERVED; NGPU=2; FL=("${NEM_FLAGS[@]}"); SHM=; IPC=(--ipc host)
-    SWEEP=(-e MM_IMAGES=8 -e SWEEP_EXTRA=--video)
+    # no --video: the ship image (r2) has no video decoder (OpenCV/PyAV removed for their bundled ffmpeg's CVEs; no service
+    # takes video). --limit-mm-per-prompt keeps video:1 (it is part of the bundle key); a video request gets an error response.
+    SWEEP=(-e MM_IMAGES=8)
     BENV=""; for ((i = 1; i < ${#NEMOTRON_ENV[@]}; i += 2)); do BENV+="${NEMOTRON_ENV[$i]} "; done; BENV+="VLLM_SKIP_P2P_CHECK=0" ;;
   shrew-ocr|embed|rerank)
     # SHREW_VARIANT -> SHREW_DIR / SHREW_FLAGS exactly as prod_env.sh does (keep the two in step)

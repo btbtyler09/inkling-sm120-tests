@@ -14,13 +14,15 @@ unset _OV _ovs _v _p _c
 # Image identity (2026-11-17): ONE image for all four services (Inkling, Nemotron, shrew-ocr, embed/rerank) = ink11nemo-minimal
 # (ink11kva-minimal + 3 files: 0071 nano_nemotron_vl.py, 0089 stream_processor.py (env opt-in, set by create-nemotron.sh only),
 # OVERLAY.txt; same vllm/torch/triton/flashinfer versions, so the aux bundles still match). Pin from site.env (or the environment):
-#   EXPECT_DIGEST=sha256:<digest>  IMAGE must end with @<digest>: ink11nemo-minimal sha256:1e567856bfddcd9b36f5f4234e1abe4d35ec3a3a1ba461f9e9f8129d7796c3cf,
-#                                  or a previous image for a rollback (ink11kva-minimal sha256:1fc652f4…, ink9.1 sha256:f5740ac4…).
+#   EXPECT_DIGEST=sha256:<digest>  IMAGE must end with @<digest>: ink11nemo-r2-minimal sha256:22d7a0cc2f77f5ce16a04b84bd33931fc7a7f3986a5b77f679969f8feb043ce8
+#                                  (= ink11nemo-minimal 1e567856 minus PyNvVideoCodec, PyAV, OpenCV: their bundled ffmpeg had HIGH CVEs;
+#                                  no video, no mp4/aac audio), or a previous image for a rollback (ink11nemo-minimal 1e567856…,
+#                                  ink11kva-minimal sha256:1fc652f4…, ink9.1 sha256:f5740ac4…).
 #   EXPECT_DIGEST unset / empty    IMAGE must be the local tag INK11_TAG (any registry prefix) and its OVERLAY.txt must carry
 #                                  the ink11 section (checked in ink9_check: a tag can be re-pointed, the file cannot lie about it).
 # create-nemotron.sh also requires the ink11nemo section in OVERLAY.txt (whatever the pin).
 # Bump this, site.env.example and RUNBOOK_PROD.md together when another image ships.
-INK11_TAG=btbtyler09/vllm-cuda:0.34.0rc1.dev307-cu130-ink11nemo-minimal
+INK11_TAG=btbtyler09/vllm-cuda:0.34.0rc1.dev307-cu130-ink11nemo-r2-minimal
 EXPECT_DIGEST=${EXPECT_DIGEST:-}
 : "${IMAGE:?set IMAGE in site.env: the ink11 tag $INK11_TAG, or <registry>/vllm-cuda@<digest> with EXPECT_DIGEST=<digest>}" "${MODEL_DIR:?}" "${WORKDIR:?}" "${NETWORK:?}"
 PORT=${PORT:-8000}; SERVED_NAME=${SERVED_NAME:-inkling}
